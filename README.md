@@ -1,4 +1,4 @@
-The csv directories contain email and phonecall data. To start working with MCP system we need the raw data to be assigned tags.
+The csv_calls and csv_mail directories must contain email and phonecall data. To start working with MCP system we need the raw data to be assigned tags.
 
 Run process_csv_data.py to start preprocessing (assigning tags and short summary to each text). This process is to be scheduled to systematically preprocess all newly obtained raw texts.
 
