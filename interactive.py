@@ -65,9 +65,8 @@ def enhanced_interactive_mode(_model, node_url = None, csv_dir: str = None, resu
             print(f"{i}. [{time_str}] {query_preview}")
 
             if item.get('processing_time'):
-                print(f"   ⏱️  {item['processing_time']:.1f} сек")
+                print(f"{item['processing_time']:.1f} сек")
 
-        print("-" * 60)
         print(f"Всего запросов: {len(history)}")
 
     def save_last_result(history, results_dir):
@@ -136,11 +135,6 @@ def enhanced_interactive_mode(_model, node_url = None, csv_dir: str = None, resu
             elif user_input.lower() == '/история':
                 show_query_history(query_history)
                 continue
-            #
-            # elif user_input.lower() == '/очистить':
-            #     os.system('cls' if os.name == 'nt' else 'clear')
-            #     print(" Экран очищен")
-            #     continue
 
             elif user_input.lower().startswith('/сохранить'):
                 save_last_result(query_history, RESULTS_DIRECTORY)
