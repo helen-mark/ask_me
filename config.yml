@@ -3,10 +3,11 @@ folders:
     audio_processed: "audio_processed"
     csv_calls: "csv_calls"
     csv_mail: "csv_mail"
+    mail_filename: "mail.csv"
     saved_results: "saved_results"
     logs: "logs"
 
-llm_model: "mistral-nemo:12b"
+llm_model: "mistral-large-3:675b-cloud"
 tags_list:
     [
         "низкое качество стирки или чистки",

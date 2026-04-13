@@ -101,7 +101,7 @@ class DriveDataLoader:
         try:
             df = pd.read_csv(
                 filepath,
-                encoding='utf-8',
+                encoding='utf-8-sig',
                 parse_dates=['date'],
                 converters={
                     'tags': lambda x: ast.literal_eval(x) if isinstance(x, str) and x.strip() else []
@@ -172,7 +172,6 @@ class DriveDataLoader:
             return []
         except Exception as e:
             print(f"Ошибка чтения CSV файла {csv_file}: {e}")
-            import traceback
             traceback.print_exc()
             return []
 
@@ -204,7 +203,6 @@ class DriveDataLoader:
                 return datetime.fromtimestamp(os.path.getmtime(filepath))
             except:
                 pass
-        # Fallback:
         return datetime.now()
 
     def setup_in_memory_db(self):
@@ -311,13 +309,15 @@ class Planner:
             response = self.client.generate(
                 model=self.model_name,
                 prompt=prompt,
-                format="json",
-                options={'temperature': 0.1, 'timeout': self.timeout, 'num_ctx': 3000}
+                options={'temperature': 0.1, 'timeout': self.timeout, 'num_ctx': 4096}
             )
+        cleaned = re.sub(r'^```json\s*', '', response['response'])   # убираем ```json в начале
+        cleaned = re.sub(r'\s*```$', '', cleaned)            # убираем ``` в конце
+
+        plan_data = json.loads(cleaned)
         try:
-            plan_data = json.loads(response['response'])
+            plan_data = json.loads(cleaned)
         except:
-            print(response['response'])
             raise
 
         time_period = self._parse_time_period(plan_data.get('time_period', {}))
@@ -338,6 +338,7 @@ class Planner:
     def _build_planner_prompt(self, user_query: str, query_history: [] = None) -> str:
         current_date = datetime.now().strftime("%Y-%m-%d")        
         tags = ', '.join(self.available_tags)
+        print('tags: ', tags)
         inject = ''
         # if query_history:
         #     n = len(query_history)
@@ -366,7 +367,7 @@ class Planner:
 2. top_n_tags - самые частые теги звонков за период
 3. tag_trends - система сгруппирует подсчет тегов по месяцам, неделям или дням, в зависимости от твоей инструкции. Например, чтобы увидеть динамику встречаемости тега за год или полгода, лучше попроси группировать по месяцам, а чтобы посмотреть динамику за неделю, - по дням. Ты получишь массив с встречаемостью тега в каждой группе, с указанием дат. Например, при группировке по месяцам, ты увидишь даты начала и конца каждого месяца и соответствующее ему число тегов.
 
-Также каждый звонок имеет ровно один тег "call". Он нужен, если необходимо посчитать количество всех звонков за какой-либо период. Если твоего пользователя интересует число звонков независимо от их содержания, используй тег "call" для их группировки и / или подсчета.
+Также каждый звонок имеет ровно один тег "call", а каждое сообщение почты - тег "mail". Он нужен, если необходимо посчитать количество всех звонков или писем за какой-либо период. Если твоего пользователя интересует число звонков независимо от их содержания, используй тег "call" для их группировки и / или подсчета.
 
 Сегодняшняя дата: {current_date} - используй ее, чтобы правильно определить временной период из запроса в случае, если в запросе временной период указан относительно сегодняшнего дня (например, "в прошлом году" и т.п.)
 
@@ -418,7 +419,7 @@ class Planner:
                     valid_tags.append(available_tag)
                     break
 
-        return valid_tags or ['низкое_качество_стирки_или_чистки']  # Fallback
+        return valid_tags or ['низкое качество стирки или чистки']
 
     def _parse_metrics(self, metrics: List[str]) -> List[MetricType]:
         metric_map = {
@@ -442,12 +443,14 @@ class QueryExecutor:
         self.data_loader = data_loader
 
     def execute_plan(self, plan: AnalysisPlan) -> Dict[str, Any]:
+        if len(plan.target_tags) == 0:
+            return {}
         results = {}
 
         all_calls = self.data_loader.load_all_calls()
 
         if not all_calls:
-            print("  Нет данных для анализа")
+            print("Нет данных для анализа")
             return {
                 'error': 'Нет данных для анализа',
                 'summary_stats': {
@@ -497,6 +500,8 @@ class QueryExecutor:
         filtered = []
         for call in calls:
             call_date = call['call_date']
+            print(start_date, call_date, end_date)
+            call_date = call_date.replace(tzinfo=None) if call_date.tzinfo else call_date
             if start_date <= call_date <= end_date:
                 filtered.append(call)
 
@@ -672,6 +677,7 @@ class CallAnalyticsMCP:
         self.drive_path = drive_path
         self.data_loader = DriveDataLoader(json_directory, drive_path)
         self.executor = QueryExecutor(self.data_loader)
+        self.api_key_ollama = 'b68d4cd87efb488aaa1a56d4d08eff81.4orCTAZiHkmcl-IeHbH_UjrT'
 
         self.total_calls = len(self.data_loader.load_all_calls())
 
@@ -682,19 +688,19 @@ class CallAnalyticsMCP:
         else:
             print(f" Загружено {self.total_calls} звонков")
 
-        
-        if self.is_local:
-            self.model = model
-            self.model_name = 'local'
-        elif node_url:
-            self.client = ollama.Client(host=node_url, timeout=self.timeout)
-            self.model_name = 'from_yandex_node'
-        else:
-            self.model_name = model
-            self._setup_ollama_client()
-            
+        self.ollama_cloud_url = 'https://ollama.com/'
+        self.client = ollama.Client(host=self.ollama_cloud_url, timeout=self.timeout, headers={'Authorization': f'Bearer {self.api_key_ollama}'})
+        self.model_name = model  # "mistral-large-3:675b-cloud"    
+        try:
+            self.client.list()
+            print(f"Ollama Cloud подключен, модель: {self.model_name}")
+        except Exception as e:
+            print(f"Ошибка подключения к Ollama Cloud: {e}")
+
+
         self.planner = Planner(model, node_url, self.client, drive_path)
         self.analyzer = Analyzer(model, node_url, self.client, drive_path)
+
 
 
     def _setup_ollama_client(self):

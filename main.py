@@ -51,10 +51,10 @@ def setup_ollama_server():
 def main():
     with open('config.yml', 'r', encoding='utf-8') as file:
         config = yaml.safe_load(file)
-    setup_ollama_server()
+#    setup_ollama_server()
     interactive.enhanced_interactive_mode(
         _model=config["llm_model"],
-        csv_dir=config['folders']['csv_calls'],
+        csv_dir=config['folders']['csv_mail'],
         results_dir=config["folders"]["saved_results"],
         drive_path=None,
     )
