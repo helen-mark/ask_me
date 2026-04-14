@@ -258,7 +258,6 @@ class DriveDataLoader:
             cursor.close()
 
 
-
 class Planner:
     def __init__(self, model, config_path, client=None):
         self.is_local = False  #isinstance(model, Llama)
@@ -409,7 +408,7 @@ class Planner:
                     valid_tags.append(available_tag)
                     break
 
-        return valid_tags or ['низкое качество стирки или чистки']
+        return valid_tags
 
     def _parse_metrics(self, metrics: List[str] | None) -> List[MetricType]:
         if not metrics:
@@ -442,8 +441,9 @@ class QueryExecutor:
         self.model_name = model
 
     def execute_plan(self, plan: AnalysisPlan) -> Dict[str, Any]:
-        if len(plan.target_tags) == 0 and len(plan.keywords) == 0 and len(plan.semantic_queries) == 0:
+        if len(plan.target_tags) == 0 and len(plan.keywords) == 0 and not plan.semantic_metrics:
             return {}
+
         results = {}
 
         all_calls = self.data_loader.load_all_calls()
@@ -782,7 +782,7 @@ class QueryExecutor:
             if json_match:
                 data = json.loads(json_match.group())
             else:
-                data = json.loads(llm_response)
+                raise ValueError(f"Incorrect json in semantic response!")
             relevant_count = data.get('relevant_count', 0)
             examples_data = data.get('examples', [])
             examples = []
@@ -822,19 +822,12 @@ class QueryExecutor:
                     prompt=prompt,
                     options={'temperature': 0.3, 'num_ctx': 50000}
         )
-        print(response)
         return response['response']
 
 class Analyzer:
     def __init__(self, model, client = None):
-        self.is_local = False # isinstance(model, Llama)
-
-        if self.is_local:
-            self.model_name = 'local'
-            self.model = model
-        else:
-            self.model_name = model
-            self.client = client
+        self.model_name = model
+        self.client = client
 
 
     def generate_answer(self, user_query: str, results: Dict, plan: AnalysisPlan) -> str:
