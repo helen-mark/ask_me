@@ -1,19 +1,22 @@
+import ast
 import json
 import os
 import re
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
-from enum import Enum
-from collections import defaultdict, Counter
 import sqlite3
+from collections import defaultdict, Counter
 from contextlib import contextmanager
-import pandas as pd
-from tqdm import tqdm
-from typing import Union
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import List, Dict, Any
+
 import ollama
 import yaml
-import ast
+from tqdm import tqdm
+
+import pandas as pd
+
+
 #from llama_cpp import Llama
 
 class MetricType(Enum):
@@ -58,26 +61,9 @@ class DriveDataLoader:
         self.drive_path = drive_path
         self.calls_cache = None
         self.conn = None
-        self._check_drive_access()
         self.timeout=600
         print(f"data loader timeout {self.timeout}")
 
-    def _check_drive_access(self):
-        if self.drive_path and 'drive' in self.csv_dir:
-            print(f"Google Drive: {self.csv_dir}")
-            if not os.path.exists(self.csv_dir):
-                print(f"Директория не найдена в Drive: {self.csv_dir}")
-                print("Создаю директорию...")
-                os.makedirs(self.csv_dir, exist_ok=True)
-
-                readme_path = os.path.join(self.csv_dir, "README.txt")
-                with open(readme_path, 'w', encoding='utf-8') as f:
-                    f.write("Загрузите сюда файлы\n")
-                    f.write(f"Создано: {datetime.now()}")
-
-                print(f"Создана новая директория в Google Drive")
-            else:
-                print(f"Директория найдена в Google Drive")
 
     def load_all_calls(self, limit: int = None) -> List[Dict]:
         if self.calls_cache is not None:
@@ -177,7 +163,6 @@ class DriveDataLoader:
 
         except Exception as e:
             print(f"Ошибка чтения CSV файла {csv_file}: {e}")
-            traceback.print_exc()
             return []
 
     def _extract_date_from_filename(self, filename: str) -> datetime:
@@ -314,7 +299,6 @@ class Planner:
         cleaned = re.sub(r'^```json\s*', '', response['response'])   # remove ```json in the beginning
         cleaned = re.sub(r'\s*```$', '', cleaned)
 
-        print("Cleaned: ", cleaned)
         plan_data = json.loads(cleaned)
         try:
             plan_data = json.loads(cleaned)
@@ -651,7 +635,7 @@ class QueryExecutor:
             elif grouping == 'week':
                 year, week, _ = call['call_date'].isocalendar()
                 period_key = f"{year}-W{week:02d}"
-            else:  # day
+            else:
                 period_key = call['call_date'].strftime('%Y-%m-%d')
 
             summary = call.get('summary', '').lower()
@@ -675,7 +659,7 @@ class QueryExecutor:
             'total_relevant': result['total_relevant'],
             'total_calls': result['total_calls'],
             'percentage': result['percentage'],
-            'examples': result['examples'][:5]  # только 5 примеров для простого подсчета
+            'examples': result['examples'][:5]
         }
 
     def _classify_by_semantic_query(self, calls: List[Dict], user_query: str, 
@@ -767,7 +751,7 @@ class QueryExecutor:
             'total_calls': total_calls,
             'percentage': round((total_relevant / total_calls * 100), 2) if total_calls else 0,
             'trends': trends,
-            'examples': all_examples[:20],  # всего до 20 примеров
+            'examples': all_examples[:10],
             'grouping': grouping
         }
 
@@ -814,9 +798,9 @@ class QueryExecutor:
             relevant_count = data.get('relevant_count', 0)
             examples_data = data.get('examples', [])
             examples = []
-            for ex in examples_data[:3]:  # максимум 3 примера на батч
+            for ex in examples_data[:3]:
                 #try:
-                    number = int(ex.get('number', 0)) - 1  # 1-based -> 0-based
+                    number = int(ex.get('number', 0)) - 1
                     if 0 <= number < len(batch):
                         call = batch[number]
                         call_date = call.get('call_date', '')
@@ -824,7 +808,7 @@ class QueryExecutor:
                             call_date = call_date.strftime('%Y-%m-%d')
                         examples.append({
                             'date': call_date,
-                            'summary': call.get('summary', '')[:300],  # обрезаем длинные summary
+                            'summary': call.get('summary', '')[:300],
                             'batch_relevant': True
                         })
                 #except (ValueError, KeyError, IndexError):
@@ -836,7 +820,7 @@ class QueryExecutor:
             }
     
         #except (json.JSONDecodeError, ValueError) as e:
-        #    print(f"⚠️ Ошибка парсинга ответа LLM: {e}")
+        #    print(f"Ошибка парсинга ответа LLM: {e}")
         #    print(f"Ответ LLM: {llm_response[:200]}...")
     
         #    return {
@@ -870,7 +854,6 @@ class Analyzer:
             self.client = client
 
         self.drive_path = drive_path
-
 
 
     def generate_answer(self, user_query: str, results: Dict, plan: AnalysisPlan) -> str:
@@ -934,7 +917,7 @@ class CallAnalyticsMCP:
         self.timeout = 600
         self.drive_path = drive_path
         self.data_loader = DriveDataLoader(json_directory, drive_path)
-        self.api_key_ollama = 'b68d4cd87efb488aaa1a56d4d08eff81.4orCTAZiHkmcl-IeHbH_UjrT'
+        self.api_key_ollama = ''
 
         self.total_calls = len(self.data_loader.load_all_calls())
 
