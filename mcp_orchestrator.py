@@ -60,7 +60,6 @@ class DriveDataLoader:
         self.csv_dir = json_directory
         self.calls_cache = None
         self.conn = None
-        self.timeout=600
 
 
     def load_all_calls(self, limit: int = None) -> List[Dict]:
@@ -829,7 +828,6 @@ class QueryExecutor:
 class Analyzer:
     def __init__(self, model, client = None):
         self.is_local = False # isinstance(model, Llama)
-        self.timeout = 600
 
         if self.is_local:
             self.model_name = 'local'
@@ -923,23 +921,6 @@ class CallAnalyticsMCP:
         self.analyzer = Analyzer(model, self.client)
         self.executor = QueryExecutor(self.data_loader, model, self.client)
 
-
-    def _setup_ollama_client(self):
-        try:
-            host = self.cred_config.get('ollama').get('host')
-
-            self.client = ollama.Client(host=host, timeout=self.timeout)
-
-            try:
-                self.client.list()
-                print(f"Ollama подключен, модель: {self.model_name}")
-            except Exception as e:
-                print(f"Ошибка подключения к Ollama: {e}")
-                print("Убедитесь, что Ollama запущен в Colab")
-
-        except ImportError:
-            print(" Ollama не установлен")
-            raise
 
     def process_query(self, user_query: str, query_history: [] = None) -> Dict[str, Any]:
         print(f"\n Анализирую запрос: '{user_query}'")
