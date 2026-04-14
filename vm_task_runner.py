@@ -1,8 +1,9 @@
+from datetime import datetime
+import json
 import subprocess
 import time
 import sys
 import logging
-from datetime import datetime
 
 import os
 
@@ -24,24 +25,20 @@ logging.basicConfig(
     ]
 )
 
-def run_command(cmd, capture_output=True):
+def run_command(cmd):
     try:
-        if capture_output:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
-            return result.returncode == 0, result.stdout, result.stderr
-        else:
-            result = subprocess.run(cmd, shell=True, timeout=30)
-            return result.returncode == 0, "", ""
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
+        return result.returncode == 0, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         logging.error(f"Command timed out: {cmd}")
         return False, "", "Timeout"
 
 def get_vm_status():
     success, stdout, _ = run_command(f"yc compute instance get {SOURCE_VM_NAME} --format json")
+    info = dict()
     if success and stdout:
         info = json.loads(stdout)
-        return info.get('status', 'UNKNOWN')
-    return 'UNKNOWN'
+    return info.get('status', 'UNKNOWN')
 
 def start_vm():
     status = get_vm_status()
@@ -132,7 +129,7 @@ def run_script_on_vm():
             return False
             
     except subprocess.TimeoutExpired:
-        logging.error("Script timed out after 1 hour")
+        logging.error("Script timed out")
         return False
 
 def stop_vm():

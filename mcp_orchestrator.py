@@ -9,12 +9,12 @@ from collections import defaultdict, Counter
 import sqlite3
 from contextlib import contextmanager
 import pandas as pd
+from tqdm import tqdm
 from typing import Union
 import ollama
 import yaml
 import ast
 #from llama_cpp import Llama
-
 
 class MetricType(Enum):
     COUNT_BY_TAG = "count_by_tag"
@@ -22,13 +22,18 @@ class MetricType(Enum):
     TAG_TRENDS = "tag_trends"
     COMPARISON = "comparison"
     SUMMARY_STATS = "summary_stats"
-
+    COUNT_BY_SEMANTIC = "count_by_semantic"
+    SEMANTIC_TRENDS = "semantic_trends"
 
 @dataclass
 class AnalysisPlan:
-    time_period: Dict[str, Any]  # start, end, description
+    time_period: Dict[str, Any]
     target_tags: List[str]
     metrics: List[MetricType]
+    keywords: List[str]
+    keyword_metrics: List[MetricType]
+    semantic_queries: List[str] = None   
+    semantic_metrics: List[MetricType] = None
     grouping: str = "month"
     comparison_tags: List[str] = None
     additional_filters: Dict = None
@@ -38,6 +43,10 @@ class AnalysisPlan:
             'time_period': self.time_period,
             'target_tags': self.target_tags,
             'metrics': [m.value for m in self.metrics],
+            'keywords': self.keywords,
+            'keyword_metrics': [m.value for m in self.keyword_metrics],
+            'semantic_queries': self.semantic_queries,
+            'semantic_metrics': [m.value for m in self.semantic_metrics] if self.semantic_metrics else [],
             'grouping': self.grouping,
             'comparison_tags': self.comparison_tags,
             'filters': self.additional_filters or {}
@@ -56,7 +65,6 @@ class DriveDataLoader:
     def _check_drive_access(self):
         if self.drive_path and 'drive' in self.csv_dir:
             print(f"Google Drive: {self.csv_dir}")
-
             if not os.path.exists(self.csv_dir):
                 print(f"Директория не найдена в Drive: {self.csv_dir}")
                 print("Создаю директорию...")
@@ -108,7 +116,7 @@ class DriveDataLoader:
                 }
             )
 
-            required_columns = ['date', 'text', 'tags']
+            required_columns = ['date', 'text', 'tags', 'summary']
             missing_columns = [col for col in required_columns if col not in df.columns]
 
             if missing_columns:
@@ -167,9 +175,6 @@ class DriveDataLoader:
 
             return all_calls
 
-        except pd.errors.EmptyDataError:
-            print(f"CSV файл {csv_file} пустой")
-            return []
         except Exception as e:
             print(f"Ошибка чтения CSV файла {csv_file}: {e}")
             traceback.print_exc()
@@ -198,12 +203,7 @@ class DriveDataLoader:
                         return datetime(year, month, day)
 
         filepath = os.path.join(self.csv_dir, filename)
-        if os.path.exists(filepath):
-            try:
-                return datetime.fromtimestamp(os.path.getmtime(filepath))
-            except:
-                pass
-        return datetime.now()
+        return datetime.fromtimestamp(os.path.getmtime(filepath))
 
     def setup_in_memory_db(self):
         """Creates in-memory SQLite for fast queries"""
@@ -311,14 +311,16 @@ class Planner:
                 prompt=prompt,
                 options={'temperature': 0.1, 'timeout': self.timeout, 'num_ctx': 4096}
             )
-        cleaned = re.sub(r'^```json\s*', '', response['response'])   # убираем ```json в начале
-        cleaned = re.sub(r'\s*```$', '', cleaned)            # убираем ``` в конце
+        cleaned = re.sub(r'^```json\s*', '', response['response'])   # remove ```json in the beginning
+        cleaned = re.sub(r'\s*```$', '', cleaned)
 
+        print("Cleaned: ", cleaned)
         plan_data = json.loads(cleaned)
         try:
             plan_data = json.loads(cleaned)
         except:
             raise
+        print('Plan: ', plan_data)
 
         time_period = self._parse_time_period(plan_data.get('time_period', {}))
 
@@ -326,19 +328,27 @@ class Planner:
 
         metrics = self._parse_metrics(plan_data.get('metrics', []))
 
+        keywords = plan_data.get('keywords', [])
+
+        keyword_metrics = self._parse_metrics(plan_data.get('keyword_metrics', []))
+
+        semantic_metrics = self._parse_metrics([plan_data.get('semantic_metrics', '')])
+        print('semantic metrics:', semantic_metrics)
+
         return AnalysisPlan(
             time_period=time_period,
             target_tags=target_tags,
             metrics=metrics,
+            keywords=keywords,
+            keyword_metrics=keyword_metrics,
             grouping=plan_data.get('grouping', 'month'),
-            comparison_tags=plan_data.get('comparison_tags', []),
-            additional_filters=plan_data.get('filters', {})
+            semantic_queries=[user_query],
+            semantic_metrics=semantic_metrics
         )
 
     def _build_planner_prompt(self, user_query: str, query_history: [] = None) -> str:
         current_date = datetime.now().strftime("%Y-%m-%d")        
         tags = ', '.join(self.available_tags)
-        print('tags: ', tags)
         inject = ''
         # if query_history:
         #     n = len(query_history)
@@ -352,6 +362,7 @@ class Planner:
 
 
         return f"""Ты — аналитик базы телефонных звонков и писем компании по аренде ковров.
+Клиентами являются любые юр. лица (магазины, банки, больницы, аптеки, театры и так далее)
 
 ЗАПРОС ТВОЕГО ПОЛЬЗОВАТЕЛЯ: "{user_query}".
 {inject}
@@ -369,10 +380,15 @@ class Planner:
 
 Также каждый звонок имеет ровно один тег "call", а каждое сообщение почты - тег "mail". Он нужен, если необходимо посчитать количество всех звонков или писем за какой-либо период. Если твоего пользователя интересует число звонков независимо от их содержания, используй тег "call" для их группировки и / или подсчета.
 
+Только если доступных тегов не достаточно для ответа на специфический вопрос пользователя, система может обратиться к кратким содержаниям звоноков и писем и подсчитать для тебя количество релевантных текстов.
+Если ты считаешь, что тегов не достаточно, используй эту опцию. Для этого в твоем ответе выбери одну метрику, которую хочешь посчитать на основе числа релевантных текстов с группировкой по периодам:
+4. count_by_semantic
+или
+5. semantic_trends
+
 Сегодняшняя дата: {current_date} - используй ее, чтобы правильно определить временной период из запроса в случае, если в запросе временной период указан относительно сегодняшнего дня (например, "в прошлом году" и т.п.)
 
 ВЕРНИ JSON с планом того, что системе нужно извлечь из данных для ответа на запрос, а именно: за какой период понадобятся данные? По каким именно тегам выбирать данные для ответа на данный запрос? Какие метрики подсчитать по этим данным для ответа на данный запрос?
-
 {{
   "time_period": {{
     "description": "описание периода",
@@ -381,9 +397,10 @@ class Planner:
   }},
   "target_tags": ["тег1", "тег2", ... (1 or more tags)],
   "metrics": ["count_by_tag" and/or "tag_trends" and/or "top_n_tags" (necessary metrics)],
+  "semantic_metrics": "count_by_semantic" or "semantic_trends",
   "grouping": "month/week/day"
-  }}
-
+}}
+Верни только JSON!
 Ответ:
 """
 
@@ -421,12 +438,19 @@ class Planner:
 
         return valid_tags or ['низкое качество стирки или чистки']
 
-    def _parse_metrics(self, metrics: List[str]) -> List[MetricType]:
+    def _parse_metrics(self, metrics: List[str] | None) -> List[MetricType]:
+        if not metrics:
+            return []
+
         metric_map = {
             'count_by_tag': MetricType.COUNT_BY_TAG,
             'top_n_tags': MetricType.TOP_N_TAGS,
             'tag_trends': MetricType.TAG_TRENDS,
-            'comparison': MetricType.COMPARISON
+            'comparison': MetricType.COMPARISON,
+            'count_by_keyword': MetricType.COUNT_BY_TAG,
+            'keyword_trends': MetricType.TAG_TRENDS,
+            'count_by_semantic': MetricType.COUNT_BY_SEMANTIC,
+            'semantic_trends': MetricType.SEMANTIC_TRENDS
         }
 
         result = []
@@ -439,11 +463,13 @@ class Planner:
 
 
 class QueryExecutor:
-    def __init__(self, data_loader: DriveDataLoader):
+    def __init__(self, data_loader: DriveDataLoader, model, client):
+        self.client = client
         self.data_loader = data_loader
+        self.model_name = model
 
     def execute_plan(self, plan: AnalysisPlan) -> Dict[str, Any]:
-        if len(plan.target_tags) == 0:
+        if len(plan.target_tags) == 0 and len(plan.keywords) == 0 and len(plan.semantic_queries) == 0:
             return {}
         results = {}
 
@@ -483,6 +509,36 @@ class QueryExecutor:
                     filtered_calls,
                     plan.comparison_tags or plan.target_tags[:2]
                 )
+    
+        if plan.keywords and plan.keyword_metrics:
+            for metric in plan.keyword_metrics:
+                if metric == MetricType.COUNT_BY_TAG:  # count_by_keyword
+                    results['count_by_keyword'] = self._count_by_keyword(filtered_calls, plan.keywords)
+                elif metric == MetricType.TAG_TRENDS:  # keyword_trends
+                    results['keyword_trends'] = self._keyword_trends(
+                        filtered_calls,
+                        plan.keywords,
+                        plan.grouping
+                    )
+
+        print(plan)
+        if plan.semantic_queries and plan.semantic_metrics:
+            print('Start semantic analysis...')
+            for metric in plan.semantic_metrics:
+                for query in plan.semantic_queries:
+                    result_key = f"semantic_{query.replace(' ', '_')[:30]}"  # ключ для результата
+                    
+                    if metric == MetricType.COUNT_BY_SEMANTIC:
+                        result = self._count_by_semantic_simple(filtered_calls, query)
+                        results[result_key] = result
+                        
+                    elif metric == MetricType.SEMANTIC_TRENDS:
+                        result = self._classify_by_semantic_query(
+                            filtered_calls, 
+                            query, 
+                            grouping=plan.grouping
+                        )
+                        results[result_key] = result
 
         results['summary_stats'] = {
             'total_calls': len(filtered_calls),
@@ -500,7 +556,6 @@ class QueryExecutor:
         filtered = []
         for call in calls:
             call_date = call['call_date']
-            print(start_date, call_date, end_date)
             call_date = call_date.replace(tzinfo=None) if call_date.tzinfo else call_date
             if start_date <= call_date <= end_date:
                 filtered.append(call)
@@ -573,6 +628,230 @@ class QueryExecutor:
             'ratio': counts.get(tags[0], 0) / counts.get(tags[1], 1) if counts.get(tags[1], 0) > 0 else 0
         }
 
+    def _count_by_keyword(self, calls: List[Dict], keywords: List[str]) -> Dict[str, int]:
+        counts = defaultdict(int)
+    
+        for call in calls:
+            summary = call.get('summary', '').lower()
+            for keyword in keywords:
+                if keyword.lower() in summary:
+                    counts[keyword] += 1
+    
+        return dict(counts)
+
+    def _keyword_trends(self, calls: List[Dict], keywords: List[str], grouping: str) -> Dict[str, List]:
+        if not keywords or not calls:
+            return {}
+
+        trends = defaultdict(lambda: defaultdict(int))
+
+        for call in calls:
+            if grouping == 'month':
+                period_key = call['call_date'].strftime('%Y-%m')
+            elif grouping == 'week':
+                year, week, _ = call['call_date'].isocalendar()
+                period_key = f"{year}-W{week:02d}"
+            else:  # day
+                period_key = call['call_date'].strftime('%Y-%m-%d')
+
+            summary = call.get('summary', '').lower()
+            for keyword in keywords:
+                if keyword.lower() in summary:
+                    trends[keyword][period_key] += 1
+    
+        result = {}
+        for keyword, period_counts in trends.items():
+            result[keyword] = [
+                {'period': period, 'count': count}
+                for period, count in sorted(period_counts.items())
+            ]
+    
+        return result
+
+    def _count_by_semantic_simple(self, calls: List[Dict], user_query: str) -> Dict:
+        result = self._classify_by_semantic_query(calls, user_query, grouping='month')
+        return {
+            'query': user_query,
+            'total_relevant': result['total_relevant'],
+            'total_calls': result['total_calls'],
+            'percentage': result['percentage'],
+            'examples': result['examples'][:5]  # только 5 примеров для простого подсчета
+        }
+
+    def _classify_by_semantic_query(self, calls: List[Dict], user_query: str, 
+                                grouping: str = "month", batch_size: int = 500) -> Dict:
+        if not calls:
+            return {
+                'total_relevant': 0,
+                'total_calls': 0,
+                'percentage': 0,
+                'trends': [],
+                'examples': []
+            }
+    
+        calls_by_period = defaultdict(list)
+        for call in calls:
+            call_date = call.get('call_date')
+            if call_date:
+                if grouping == 'month':
+                    period_key = call_date.strftime('%Y-%m')
+                elif grouping == 'week':
+                    year, week, _ = call_date.isocalendar()
+                    period_key = f"{year}-W{week:02d}"
+                else:  # day
+                    period_key = call_date.strftime('%Y-%m-%d')
+                calls_by_period[period_key].append(call)
+        
+        sorted_periods = sorted(calls_by_period.keys())
+        
+        period_results = []
+        total_relevant = 0
+        total_calls = 0
+        all_examples = []
+        
+        print(f"Анализ по периодам ({grouping}): {len(sorted_periods)} периодов")
+        
+        for period in tqdm(sorted_periods, desc="Анализ по периодам"):
+            period_calls = calls_by_period[period]
+            
+            period_relevant = 0
+            period_examples = []
+            
+            batches = [period_calls[i:i+batch_size] for i in range(0, len(period_calls), batch_size)]
+            
+            for batch_idx, batch in enumerate(batches):
+                calls_text = []
+                for idx, call in enumerate(batch):
+                    summary = call.get('summary', '')
+                    if summary and summary.strip():
+                        calls_text.append(f"{idx+1}. {summary.strip()}")
+                
+                if not calls_text:
+                    continue
+                
+                prompt = self._build_semantic_batch_prompt(user_query, calls_text)
+                print('Calling LLM...')
+                llm_response = self._call_llm(prompt)
+                print('Parsing LLM response...')
+                batch_result = self._parse_semantic_batch_response(llm_response, batch)
+                print('Updating period relevant texts...')
+                period_relevant += batch_result['relevant_count']
+                print('Updating period examples...')
+                period_examples.extend(batch_result['examples'])
+                    
+            
+            period_results.append({
+                'period': period,
+                'relevant': period_relevant,
+                'total': len(period_calls),
+                'percentage': (period_relevant / len(period_calls) * 100) if period_calls else 0
+            })
+            
+            total_relevant += period_relevant
+            total_calls += len(period_calls)
+            all_examples.extend(period_examples[:5])  # до 5 примеров на период
+        
+        trends = [
+            {
+                'period': r['period'],
+                'count': r['relevant'],
+                'total_calls': r['total'],
+                'percentage': round(r['percentage'], 2)
+            }
+            for r in period_results
+        ]
+        
+        return {
+            'query': user_query,
+            'total_relevant': total_relevant,
+            'total_calls': total_calls,
+            'percentage': round((total_relevant / total_calls * 100), 2) if total_calls else 0,
+            'trends': trends,
+            'examples': all_examples[:20],  # всего до 20 примеров
+            'grouping': grouping
+        }
+
+
+    def _build_semantic_batch_prompt(self, user_query: str, calls_text: List[str]) -> str:
+        calls_formatted = "\n".join(calls_text)
+
+        prompt = f"""Ты анализируешь звонки клиентов. Пользователь хочет найти звонки, которые помогут ответить на его запрос.
+    Клиентами являются любые юр. лица (магазины, банки, больницы, аптеки, театры и так далее)
+
+    Запрос пользователя: {user_query}
+
+    Для каждого звонка из списка ниже определи, соответствует ли он этому критерию.
+    
+    Правила:
+    1. Учитывай смысл и контекст, а не только ключевые слова.
+    2. Если есть сомнения - считай, что НЕ соответствует
+    
+    ОТВЕТЬ ТОЛЬКО В ФОРМАТЕ JSON:
+    {{
+    "relevant_count": число_релевантных_звонков_в_этом_батче,
+    "examples": [
+        {{"number": 1, "date": "дата", "summary": "текст"}},
+        ...
+    ]
+    }}
+
+    В поле "examples" включи ДО 3 примеров релевантных текстов звонков (если они есть). Если релевантных нет, верни пустой список.
+
+    СПИСОК ЗВОНКОВ ДЛЯ АНАЛИЗА:
+    {calls_formatted}
+
+    Твой ответ (только JSON):"""
+
+        return prompt
+
+    def _parse_semantic_batch_response(self, llm_response: str, batch: List[Dict]) -> Dict:
+        #try:
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(llm_response)
+            relevant_count = data.get('relevant_count', 0)
+            examples_data = data.get('examples', [])
+            examples = []
+            for ex in examples_data[:3]:  # максимум 3 примера на батч
+                #try:
+                    number = int(ex.get('number', 0)) - 1  # 1-based -> 0-based
+                    if 0 <= number < len(batch):
+                        call = batch[number]
+                        call_date = call.get('call_date', '')
+                        if hasattr(call_date, 'strftime'):
+                            call_date = call_date.strftime('%Y-%m-%d')
+                        examples.append({
+                            'date': call_date,
+                            'summary': call.get('summary', '')[:300],  # обрезаем длинные summary
+                            'batch_relevant': True
+                        })
+                #except (ValueError, KeyError, IndexError):
+                #    continue
+
+            return {
+                'relevant_count': relevant_count,
+                'examples': examples
+            }
+    
+        #except (json.JSONDecodeError, ValueError) as e:
+        #    print(f"⚠️ Ошибка парсинга ответа LLM: {e}")
+        #    print(f"Ответ LLM: {llm_response[:200]}...")
+    
+        #    return {
+        #        'relevant_count': 0,
+        #        'examples': []
+        #    }
+
+    def _call_llm(self, prompt: str) -> str:
+        response = self.client.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    options={'temperature': 0.3, 'num_ctx': 50000}
+        )
+        print(response)
+        return response['response']
 
 class Analyzer:
     def __init__(self, model, datasphere_node_url = None, client = None, drive_path: str = None):
@@ -613,8 +892,8 @@ class Analyzer:
             return response['response'].strip()
 
         except Exception as e:
-            print(f" Ошибка анализатора: {e}")
-            return self._generate_fallback_answer(results, plan)
+            return (f" Ошибка анализатора: {e}")
+
 
     def _build_analyzer_prompt(self, user_query: str, results: Dict, plan: AnalysisPlan) -> str:
         results_str = json.dumps(results, ensure_ascii=False, indent=2, default=str)
@@ -628,9 +907,11 @@ class Analyzer:
 Для ответа на запрос система выбрала тексты обращений клиентов за нужный период и посчитала нужные метрики.
 - Период, которым интересовался клиент: {plan.time_period['description']}
 - Подходящие теги, которые выбрала система для выбора обращений для анализа данного запроса: {', '.join(plan.target_tags)}
+- Ключевые слова, по которым также собиралась статистика: {', '.join(plan.keywords)}
 - Метрики, которые система подсчитала для выполнения данного запроса, на основании текстов обращений, отобранных по этим тегам: {[m.value for m in plan.metrics]}
+- Метрики, которые система по этим ключевым словам: {[m.value for m in plan.keyword_metrics]}
 
-Вот результаты, которые выдала система по подсчетам метрик для этих тегов:
+Вот результаты, которые выдала система по подсчетам метрик:
 {results_str}
 
 ТВОЯ ЗАДАЧА:
@@ -646,29 +927,6 @@ class Analyzer:
 
 ОТВЕТ НА РУССКОМ:"""
 
-    def _generate_fallback_answer(self, results: Dict, plan: AnalysisPlan) -> str:
-        answer_parts = []
-
-        answer_parts.append(f" Анализ за период: {plan.time_period['description']}")
-
-        if 'count_by_tag' in results and results['count_by_tag']:
-            answer_parts.append("\n Количество звонков по тегам:")
-            for tag, count in results['count_by_tag'].items():
-                answer_parts.append(f"  • {tag}: {count}")
-        else:
-            answer_parts.append("\n  Нет данных по указанным тегам")
-
-        if 'tag_trends' in results:
-            for tag, trends in results['tag_trends'].items():
-                if trends:
-                    first = trends[0]['count']
-                    last = trends[-1]['count']
-                    change = ((last - first) / first * 100) if first > 0 else 0
-                    trend_desc = " рост" if change > 0 else " снижение" if change < 0 else " без изменений"
-                    answer_parts.append(f"\n Динамика '{tag}': {trend_desc} ({abs(change):.1f}%)")
-
-        return "\n".join(answer_parts)
-
 
 class CallAnalyticsMCP:
     def __init__(self, json_directory: str, model, node_url=None, drive_path: str = None):
@@ -676,7 +934,6 @@ class CallAnalyticsMCP:
         self.timeout = 600
         self.drive_path = drive_path
         self.data_loader = DriveDataLoader(json_directory, drive_path)
-        self.executor = QueryExecutor(self.data_loader)
         self.api_key_ollama = 'b68d4cd87efb488aaa1a56d4d08eff81.4orCTAZiHkmcl-IeHbH_UjrT'
 
         self.total_calls = len(self.data_loader.load_all_calls())
@@ -700,6 +957,8 @@ class CallAnalyticsMCP:
 
         self.planner = Planner(model, node_url, self.client, drive_path)
         self.analyzer = Analyzer(model, node_url, self.client, drive_path)
+        self.executor = QueryExecutor(self.data_loader, model, self.client)
+
 
 
 
@@ -715,10 +974,10 @@ class CallAnalyticsMCP:
 
             try:
                 self.client.list()
-                print(f" Ollama подключен, модель: {self.model_name}")
+                print(f"Ollama подключен, модель: {self.model_name}")
             except Exception as e:
-                print(f"  Ошибка подключения к Ollama: {e}")
-                print("  Убедитесь, что Ollama запущен в Colab")
+                print(f"Ошибка подключения к Ollama: {e}")
+                print("Убедитесь, что Ollama запущен в Colab")
 
         except ImportError:
             print(" Ollama не установлен")
@@ -759,7 +1018,7 @@ class CallAnalyticsMCP:
         return response
 
     def _print_analysis_summary(self, results: Dict[str, Any]):
-        print(" КРАТКАЯ СТАТИСТИКА:")
+        print("КРАТКАЯ СТАТИСТИКА:")
 
         if 'summary_stats' in results:
             stats = results['summary_stats']
