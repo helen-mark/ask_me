@@ -56,13 +56,11 @@ class AnalysisPlan:
         }
 
 class DriveDataLoader:
-    def __init__(self, json_directory: str, drive_path: str = None):
+    def __init__(self, json_directory: str):
         self.csv_dir = json_directory
-        self.drive_path = drive_path
         self.calls_cache = None
         self.conn = None
         self.timeout=600
-        print(f"data loader timeout {self.timeout}")
 
 
     def load_all_calls(self, limit: int = None) -> List[Dict]:
@@ -73,8 +71,6 @@ class DriveDataLoader:
 
         if not os.path.exists(self.csv_dir):
             print(f"Директория не найдена: {self.csv_dir}")
-            if self.drive_path:
-                print(f"Ожидаемый путь: {self.csv_dir}")
             return []
 
         try:
@@ -134,7 +130,6 @@ class DriveDataLoader:
                     'tags': tags if isinstance(tags, list) else [tags],
                     'text_length': len(str(row['text'])) if pd.notna(row['text']) else 0,
                     'source_file': filepath,
-                    'drive_path': self.drive_path if self.drive_path else None
                 }
 
                 all_calls.append(call_record)
@@ -211,7 +206,6 @@ class DriveDataLoader:
             tags_json TEXT,
             text_length INTEGER,
             source_file TEXT,
-            drive_path TEXT
         )
         """)
 
@@ -227,7 +221,7 @@ class DriveDataLoader:
         for call in calls:
             cursor.execute("""
             INSERT INTO calls (id, file_name, call_date, year, month, day, 
-                              full_text, summary, tags_json, text_length, source_file, drive_path)
+                              full_text, summary, tags_json, text_length, source_file)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 call['id'],
@@ -240,9 +234,7 @@ class DriveDataLoader:
                 call['summary'],
                 json.dumps(call['tags'], ensure_ascii=False),
                 call['text_length'],
-                call['source_file'],
-                call.get('drive_path', '')
-            ))
+                call['source_file']            ))
 
             for tag in call['tags']:
                 cursor.execute(
@@ -252,8 +244,7 @@ class DriveDataLoader:
 
         self.conn.commit()
 
-        source = "Google Drive" if self.drive_path else "локальной папки"
-        print(f" Данные загружены в in-memory SQLite ({len(calls)} записей из {source})")
+        print(f" Данные загружены в in-memory SQLite ({len(calls)} записей)")
         return self.conn
 
     @contextmanager
@@ -270,10 +261,9 @@ class DriveDataLoader:
 
 
 class Planner:
-    def __init__(self, model, datasphere_node_url=None, client=None, drive_path=None, config_path='config.yml'):
+    def __init__(self, model, config_path, client=None):
         self.is_local = False  #isinstance(model, Llama)
 
-        self.drive_path = drive_path
         self.timeout = 600
         with open(config_path, 'r', encoding='utf-8') as file:
             config = yaml.safe_load(file)
@@ -528,7 +518,6 @@ class QueryExecutor:
             'total_calls': len(filtered_calls),
             'period': plan.time_period['description'],
             'date_range': f"{plan.time_period['start'].strftime('%Y-%m-%d')} - {plan.time_period['end'].strftime('%Y-%m-%d')}",
-            'data_source': 'Google Drive' if self.data_loader.drive_path else 'Local'
         }
 
         return results
@@ -838,22 +827,16 @@ class QueryExecutor:
         return response['response']
 
 class Analyzer:
-    def __init__(self, model, datasphere_node_url = None, client = None, drive_path: str = None):
+    def __init__(self, model, client = None):
         self.is_local = False # isinstance(model, Llama)
         self.timeout = 600
 
         if self.is_local:
             self.model_name = 'local'
             self.model = model
-        elif datasphere_node_url:
-            self.client = ollama.Client(host=datasphere_node_url, timeout=self.timeout)
-            self.model_name = 'from_yandex_node'
-            print(f"Mode: Yandex DataSphere (node url: {datasphere_node_url})")
         else:
             self.model_name = model
             self.client = client
-
-        self.drive_path = drive_path
 
 
     def generate_answer(self, user_query: str, results: Dict, plan: AnalysisPlan) -> str:
@@ -880,8 +863,6 @@ class Analyzer:
 
     def _build_analyzer_prompt(self, user_query: str, results: Dict, plan: AnalysisPlan) -> str:
         results_str = json.dumps(results, ensure_ascii=False, indent=2, default=str)
-
-        data_source = "Google Drive" if self.drive_path else "локальной базы"
 
         return f"""Ты — старший аналитик компании по аренде ковров.
 
@@ -912,23 +893,23 @@ class Analyzer:
 
 
 class CallAnalyticsMCP:
-    def __init__(self, json_directory: str, model, node_url=None, drive_path: str = None):
+    def __init__(self, config_path: str, credentials_path: str, data_directory: str, model):
+        with open(credentials_path, 'r', encoding='utf-8') as file:
+            self.cred_config = yaml.safe_load(file)
+
         self.is_local = False
         self.timeout = 600
-        self.drive_path = drive_path
-        self.data_loader = DriveDataLoader(json_directory, drive_path)
-        self.api_key_ollama = ''
+        self.data_loader = DriveDataLoader(data_directory)
+        self.api_key_ollama = self.cred_config.get('ollama').get('key')
 
         self.total_calls = len(self.data_loader.load_all_calls())
 
         if self.total_calls == 0:
             print("  Внимание: Нет данных для анализа")
-            if self.drive_path:
-                print(f"  Проверьте наличие файлов в Google Drive: {json_directory}")
         else:
             print(f" Загружено {self.total_calls} звонков")
 
-        self.ollama_cloud_url = 'https://ollama.com/'
+        self.ollama_cloud_url = self.cred_config.get('ollama').get('cloud_url')
         self.client = ollama.Client(host=self.ollama_cloud_url, timeout=self.timeout, headers={'Authorization': f'Bearer {self.api_key_ollama}'})
         self.model_name = model  # "mistral-large-3:675b-cloud"    
         try:
@@ -938,20 +919,14 @@ class CallAnalyticsMCP:
             print(f"Ошибка подключения к Ollama Cloud: {e}")
 
 
-        self.planner = Planner(model, node_url, self.client, drive_path)
-        self.analyzer = Analyzer(model, node_url, self.client, drive_path)
+        self.planner = Planner(model, config_path, self.client)
+        self.analyzer = Analyzer(model, self.client)
         self.executor = QueryExecutor(self.data_loader, model, self.client)
-
-
 
 
     def _setup_ollama_client(self):
         try:
-            host = "http://localhost:11434"
-
-            if self.drive_path:
-                models_cache_dir = os.path.join(self.drive_path, "models_cache")
-                os.makedirs(models_cache_dir, exist_ok=True)
+            host = self.cred_config.get('ollama').get('host')
 
             self.client = ollama.Client(host=host, timeout=self.timeout)
 
@@ -968,9 +943,6 @@ class CallAnalyticsMCP:
 
     def process_query(self, user_query: str, query_history: [] = None) -> Dict[str, Any]:
         print(f"\n Анализирую запрос: '{user_query}'")
-
-        if self.drive_path:
-            print(f" Источник данных: Google Drive")
 
         print(" Создаю план анализа...")
         analysis_plan = self.planner.create_analysis_plan(user_query, query_history)
@@ -992,8 +964,7 @@ class CallAnalyticsMCP:
             'answer': answer,
             'total_calls_analyzed': analysis_results.get('summary_stats', {}).get('total_calls', 0),
             'processing_time': datetime.now().isoformat(),
-            'model_used': self.planner.model_name,
-            'data_source': 'Google Drive' if self.drive_path else 'Local'
+            'model_used': self.planner.model_name
         }
 
         self._print_analysis_summary(analysis_results)
@@ -1050,9 +1021,7 @@ class CallAnalyticsMCP:
                 'end': max(dates).isoformat() if dates else None
             },
             'average_text_length': sum(len(c['full_text']) for c in calls) // len(calls) if calls else 0,
-            'model': self.planner.model_name,
-            'data_source': 'Google Drive' if self.drive_path else 'Local Files',
-            'drive_path': self.drive_path if self.drive_path else None
+            'model': self.planner.model_name
         }
 
    
