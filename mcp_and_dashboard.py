@@ -7,7 +7,6 @@ import yaml
 import sys
 import os
 import hmac
-
 import mcp_orchestrator
 
 def check_password():
@@ -96,9 +95,9 @@ def load_data(data_path):
         file_path = os.path.join(data_path, f)
         break
     print(file_path)
-    df = pd.read_csv(file_path, encoding='utf-8-sig')
-    df = df.sort_values('date').reset_index(drop=True)
-    print(1)
+    df = pd.read_csv(file_path, encoding='utf-8')
+    df = df.sort_values('date', ascending=False).reset_index(drop=True)
+    print(df.head(20))
     df['date'] = pd.to_datetime(df['date_str'])
     if df['date'].dt.tz is not None:
         df['date'] = df['date'].dt.tz_localize(None)
@@ -216,7 +215,7 @@ left_col, right_col = st.columns([2, 1])
 
 # ==================== LEFT COLUMN - DASHBOARD ====================
 with left_col:
-    st.markdown("##Дашборд аналитики")
+    st.markdown("Дашборд аналитики")
 
     TAGS_OF_INTEREST = ['не доставили ковры вовремя', 'долго нет ответа на заявку',
                         'менеджер нагрубил клиенту', 'клиент уходит к конкурентам',
@@ -271,7 +270,7 @@ with left_col:
                 total_stats.columns = ['Тег', 'Всего обращений']
                 total_stats = total_stats.sort_values('Всего обращений', ascending=False)
 
-                st.markdown("### Статистика")
+                st.markdown("Статистика")
                 col_stats1, col_stats2, col_stats3 = st.columns(3)
 
                 with col_stats1:
@@ -291,7 +290,7 @@ with left_col:
                 st.warning("Нет данных для выбранных тегов в указанном периоде")
 
         st.markdown("---")
-        st.markdown("## Обращения с тегом 'расторжение договора' за последний месяц")
+        st.markdown("Обращения с тегом 'расторжение договора' за последний месяц")
 
         last_month_df = filter_by_timeframe(df, 'Последний месяц')
         termination_records = get_termination_records(last_month_df)
@@ -323,7 +322,7 @@ with left_col:
             st.info("Нет обращений с тегом 'расторжение договора' за последний месяц")
 
         st.markdown("---")
-        st.markdown("## Просмотр последних записей по тегу")
+        st.markdown("Просмотр последних записей по тегу")
 
         all_tags = set()
         for tags_list in df['tags']:
@@ -389,11 +388,11 @@ with left_col:
         st.error(f"Ошибка при загрузке данных: {e}")
 
 with right_col:
-    st.markdown("##🤖AI Аналитик")
+    st.markdown("🤖  AI Аналитик")
     st.markdown("Задайте вопрос о данных в свободной форме")
 
     if not st.session_state.initialized:
-        if st.button("🚀 Запустить AI аналитика", use_container_width=True):
+        if st.button("Запустить AI аналитика", use_container_width=True):
             init_system()
             st.rerun()
         st.info("Нажмите кнопку выше, чтобы активировать AI аналитика")
@@ -412,19 +411,19 @@ with right_col:
                 except:
                     st.write("Информация временно недоступна")
 
-        with st.expander("💡 Примеры запросов", expanded=False):
-            examples = [
-                "Какие самые частые темы обращений?",
-                "Покажи динамику обращений по дням",
-                "Какие проблемы требуют срочного решения?",
-                "Сколько обращений с тегом 'расторжение договора'?"
-            ]
-            for example in examples:
-                if st.button(f"📝 {example}", key=f"example_{example[:20]}", use_container_width=True):
-                    st.session_state.user_input = example
-                    st.rerun()
+        #with st.expander("💡 Примеры запросов", expanded=False):
+        #    examples = [
+        #        "Какие самые частые темы обращений?",
+        #        "Покажи динамику обращений по дням",
+        #        "Какие проблемы требуют срочного решения?",
+        #        "Сколько обращений с тегом 'расторжение договора'?"
+        #    ]
+        #    for example in examples:
+        #        if st.button(f"📝 {example}", key=f"example_{example[:20]}", use_container_width=True):
+        #            st.session_state.user_input = example
+        #            st.rerun()
 
-        st.markdown("---")
+        #st.markdown("---")
 
         chat_container = st.container(height=400)
 

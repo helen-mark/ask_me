@@ -651,7 +651,7 @@ class QueryExecutor:
         }
 
     def _classify_by_semantic_query(self, calls: List[Dict], user_query: str, 
-                                grouping: str = "month", batch_size: int = 500) -> Dict:
+                                grouping: str = "month", batch_size: int = 200) -> Dict:
         if not calls:
             return {
                 'total_relevant': 0,

@@ -7,7 +7,7 @@ folders:
     saved_results: "saved_results"
     logs: "logs"
 
-llm_model: "mistral-large-3:675b-cloud"
+llm_model: 'gemini-3-flash-preview' #"mistral-large-3:675b-cloud"
 tags_list:
     [
         "низкое качество стирки или чистки",
