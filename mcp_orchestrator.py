@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from functools import wraps
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from typing import List, Dict, Any
 
 import ollama
@@ -37,6 +39,7 @@ class AnalysisPlan:
     keyword_metrics: List[MetricType]
     semantic_queries: List[str] = None   
     semantic_metrics: List[MetricType] = None
+    semantic_tags: List[str] = None
     grouping: str = "month"
     comparison_tags: List[str] = None
     additional_filters: Dict = None
@@ -50,6 +53,7 @@ class AnalysisPlan:
             'keyword_metrics': [m.value for m in self.keyword_metrics],
             'semantic_queries': self.semantic_queries,
             'semantic_metrics': [m.value for m in self.semantic_metrics] if self.semantic_metrics else [],
+            'semantic_tags': self.semantic_tags,
             'grouping': self.grouping,
             'comparison_tags': self.comparison_tags,
             'filters': self.additional_filters or {}
@@ -305,6 +309,8 @@ class Planner:
         keyword_metrics = self._parse_metrics(plan_data.get('keyword_metrics', []))
 
         semantic_metrics = self._parse_metrics([plan_data.get('semantic_metrics', '')])
+
+        semantic_tags = self._validate_tags(plan_data.get('semantic_tags', []))
         print('semantic metrics:', semantic_metrics)
 
         return AnalysisPlan(
@@ -315,7 +321,8 @@ class Planner:
             keyword_metrics=keyword_metrics,
             grouping=plan_data.get('grouping', 'month'),
             semantic_queries=[user_query],
-            semantic_metrics=semantic_metrics
+            semantic_metrics=semantic_metrics,
+            semantic_tags=semantic_tags
         )
 
     def _build_planner_prompt(self, user_query: str, query_history: [] = None) -> str:
@@ -357,6 +364,8 @@ class Planner:
 4. count_by_semantic
 или
 5. semantic_trends
+Также постарайся выбрать теги,по которым система отберет тексты для прочтения, чтобы не читать все письма за период (их может быть много):
+6. semantic_tags
 
 Сегодняшняя дата: {current_date} - используй ее, чтобы правильно определить временной период из запроса в случае, если в запросе временной период указан относительно сегодняшнего дня (например, "в прошлом году" и т.п.)
 
@@ -370,6 +379,7 @@ class Planner:
   "target_tags": ["тег1", "тег2", ... (1 or more tags)],
   "metrics": ["count_by_tag" and/or "tag_trends" and/or "top_n_tags" (necessary metrics)],
   "semantic_metrics": "count_by_semantic" or "semantic_trends",
+  "semantic_tags": ["тег1", "тег2", ... (1 or more tags)],
   "grouping": "month/week/day"
 }}
 Верни только JSON!
@@ -500,14 +510,14 @@ class QueryExecutor:
             for metric in plan.semantic_metrics:
                 for query in plan.semantic_queries:
                     result_key = f"semantic_{query.replace(' ', '_')[:30]}"  # ключ для результата
-                    
+                    filtered_by_tags = self._filter_calls_by_tags(filtered_calls, plan.semantic_tags)
                     if metric == MetricType.COUNT_BY_SEMANTIC:
-                        result = self._count_by_semantic_simple(filtered_calls, query)
+                        result = self._count_by_semantic_simple(filtered_by_tags, query)
                         results[result_key] = result
                         
                     elif metric == MetricType.SEMANTIC_TRENDS:
                         result = self._classify_by_semantic_query(
-                            filtered_calls, 
+                            filtered_by_tags, 
                             query, 
                             grouping=plan.grouping
                         )
@@ -532,6 +542,16 @@ class QueryExecutor:
             if start_date <= call_date <= end_date:
                 filtered.append(call)
 
+        return filtered
+
+    def _filter_calls_by_tags(self, calls: List[Dict], target_tags: List[str]):
+        filtered = []
+        for call in calls:
+            for t in call['tags']:
+                for tag in target_tags:
+                    if tag.lower() == t.lower():
+                        filtered.append(call)
+                        break
         return filtered
 
     def _count_by_tag(self, calls: List[Dict], target_tags: List[str]) -> Dict[str, int]:
@@ -815,13 +835,25 @@ class QueryExecutor:
         #        'relevant_count': 0,
         #        'examples': []
         #    }
+    @retry(
+        stop=stop_after_attempt(3),  # Максимум 3 попытки
+        wait=wait_exponential(multiplier=1, min=2, max=10),  # 2, 4, 8 секунд
+        retry=retry_if_exception_type(Exception),  # При любой ошибке повторяем
+        reraise=True  # После всех попыток поднять исключение
+    )
+    def generate_with_retry(self, prompt):
+        response = self.client.generate(
+            model=self.model_name,
+            prompt=prompt,
+            options={'temperature': 0.3}
+        )
+        return response
 
     def _call_llm(self, prompt: str) -> str:
-        response = self.client.generate(
-                    model=self.model_name,
-                    prompt=prompt,
-                    options={'temperature': 0.3, 'num_ctx': 50000}
-        )
+        try:
+            response = self.generate_with_retry(prompt)
+        except Exception as e:
+            raise Exception(f"Не удалось получить ответ после 3 попыток: {e}")
         return response['response']
 
 class Analyzer:
@@ -836,18 +868,12 @@ class Analyzer:
         #print(f"DEBUG analyzer_prompt: {prompt}")
 
         try:
-            if self.is_local:
-                response = self.model(prompt,
-                                      temperature=0.3)
-            else:
-                response = self.client.generate(
-                    model=self.model_name,
-                    prompt=prompt,
-                    options={'temperature': 0.3, 'num_ctx': 30000}
-                )
-
+            response = self.client.generate(
+                model=self.model_name,
+                prompt=prompt,
+                options={'temperature': 0.3, 'num_ctx': 30000}
+            )
             return response['response'].strip()
-
         except Exception as e:
             return (f" Ошибка анализатора: {e}")
 
@@ -889,7 +915,7 @@ class CallAnalyticsMCP:
             self.cred_config = yaml.safe_load(file)
 
         self.is_local = False
-        self.timeout = 600
+        self.timeout = 100
         self.data_loader = DriveDataLoader(data_directory)
         self.api_key_ollama = self.cred_config.get('ollama').get('key')
 
