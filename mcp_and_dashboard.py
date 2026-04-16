@@ -100,7 +100,6 @@ def load_data(data_path):
     print(file_path)
     df = pd.read_csv(file_path, encoding='utf-8')
     df = df.sort_values('date', ascending=False).reset_index(drop=True)
-    print(df.head(20))
     df['date'] = pd.to_datetime(df['date_str'])
     if df['date'].dt.tz is not None:
         df['date'] = df['date'].dt.tz_localize(None)
@@ -151,36 +150,13 @@ def prepare_tag_data(df, tags_of_interest):
     return pd.DataFrame(columns=['date', 'count', 'tag'])
 
 
-def get_termination_records(df):
-    termination_df = df[df['tags'].apply(lambda x: 'расторжение договора' in x)].copy()
-
-    if termination_df.empty:
-        return pd.DataFrame()
-
-    termination_df = termination_df.sort_values('date', ascending=False)
-
-    result_df = pd.DataFrame()
-    result_df['Дата и время'] = termination_df['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    result_df['Краткое содержание'] = termination_df['summary']
-
-    if 'source_audio' in termination_df.columns:
-        result_df['Имя файла'] = termination_df['source_audio'].fillna('')
+def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=100):
+    if search_in_summary:
+        column = 'summary'
     else:
-        result_df['Имя файла'] = ''
-
-    if 'from' in termination_df.columns:
-        result_df['От кого'] = termination_df['from'].fillna('')
-    else:
-        result_df['От кого'] = ''
-
-    return result_df
-
-
-def get_recent_records_by_tag(df, tag_name, n_records=100):
-    if tag_name == 'Все теги':
-        filtered_df = df.copy()
-    else:
-        filtered_df = df[df['tags'].apply(lambda x: tag_name in x)].copy()
+        column = 'tags'
+        
+    filtered_df = df[df[column].apply(lambda x: any(tag_name in x for tag_name in tag_names))].copy()
 
     if filtered_df.empty:
         return pd.DataFrame()
@@ -191,9 +167,11 @@ def get_recent_records_by_tag(df, tag_name, n_records=100):
     result_df['Дата и время'] = filtered_df['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
     if 'from' in filtered_df.columns:
-        result_df['От кого'] = filtered_df['from'].fillna('')
+        result_df['Источник'] = filtered_df['from'].fillna('')
+    elif 'source_audio' in filtered_df.columns:
+        result_df['Источник'] = filtered_df['source_audio'].fillna('')
     else:
-        result_df['От кого'] = ''
+        result_df['Источник'] = ''
 
     result_df['Краткое содержание'] = filtered_df['summary']
     result_df['Теги'] = filtered_df['tags'].apply(lambda x: ', '.join(x) if x else '')
@@ -203,26 +181,18 @@ def get_recent_records_by_tag(df, tag_name, n_records=100):
     elif 'body' in filtered_df.columns:
         result_df['Исходный текст'] = filtered_df['body'].fillna('')
 
-    if 'source_audio' in filtered_df.columns:
-        result_df['Имя файла'] = filtered_df['source_audio'].fillna('')
-    else:
-        result_df['Имя файла'] = ''
-
     return result_df
-
 
 st.title("Аналитика обращений клиентов")
 st.markdown("---")
 
-left_col, right_col = st.columns([2, 1])
+left_col, right_col = st.columns([5, 2])
 
 # ==================== LEFT COLUMN - DASHBOARD ====================
 with left_col:
     st.markdown("Дашборд аналитики")
 
-    TAGS_OF_INTEREST = ['не доставили ковры вовремя', 'долго нет ответа на заявку',
-                        'менеджер нагрубил клиенту', 'клиент уходит к конкурентам',
-                        'расторжение договора', 'клиент возмущен', 'mail']
+    TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail']
 
     try:
         df = load_data(config['folders']['csv_mail'])
@@ -235,12 +205,12 @@ with left_col:
             key="timeframe_select"
         )
 
-        st.markdown("### Выберите теги для отображения")
+        st.markdown("Выберите теги для отображения")
         selected_tags = []
         cols = st.columns(3)
         for idx, tag in enumerate(TAGS_OF_INTEREST):
             with cols[idx % 3]:
-                if st.checkbox(tag, value=True, key=f"tag_{tag}"):
+                if st.checkbox(tag, value=(False if tag=='mail' else True), key=f"tag_{tag}"):
                     selected_tags.append(tag)
 
         filtered_df = filter_by_timeframe(df, timeframe)
@@ -292,38 +262,35 @@ with left_col:
             else:
                 st.warning("Нет данных для выбранных тегов в указанном периоде")
 
-        st.markdown("---")
-        st.markdown("Обращения с тегом 'расторжение договора' за последний месяц")
-
-        last_month_df = filter_by_timeframe(df, 'Последний месяц')
-        termination_records = get_termination_records(last_month_df)
-
-        if not termination_records.empty:
-            st.dataframe(
-                termination_records,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            col_terms1, col_terms2, col_terms3, col_terms4 = st.columns(4)
-
-            with col_terms1:
-                st.metric("Всего расторжений", len(termination_records))
-
-            with col_terms2:
-                unique_files = termination_records[termination_records['Имя файла'] != '']['Имя файла'].nunique()
-                st.metric("Уникальных файлов", unique_files)
-
-            with col_terms3:
-                unique_from = termination_records[termination_records['От кого'] != '']['От кого'].nunique()
-                st.metric("Уникальных отправителей", unique_from)
-
-            with col_terms4:
-                has_summary = termination_records['Краткое содержание'] != 'нет'
-                st.metric("Есть краткое содержание", has_summary.sum())
-        else:
-            st.info("Нет обращений с тегом 'расторжение договора' за последний месяц")
-
+        col_termination, col_prediction = st.columns([1,1])
+        set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT']}
+        termination_tags = ['расторжение договора', 'приостановить услуги', 'клиент недоволен и угрожает отказом от услуг']
+        set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags}
+        for s in [set_termination, set_prediction]:
+            with s['col']:
+                st.markdown(s['name'])
+        
+                last_month_df = filter_by_timeframe(df, 'Последний месяц')
+                termination_records = get_recent_records_by_tag(last_month_df, s['tags'])
+     
+                if not termination_records.empty:
+                    st.dataframe(
+                        termination_records,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+        
+                    col_terms1, col_terms2 = st.columns(2)
+        
+                    with col_terms1:
+                        st.metric("Всего сообщений", len(termination_records))
+        
+                    with col_terms2:
+                        unique_files = termination_records[termination_records['Источник'] != '']['Источник'].nunique()
+                        st.metric("Уникальных отправителей", unique_files)
+                else:
+                    st.info("Нет обращений за последний месяц")
+    
         st.markdown("---")
         st.markdown("Просмотр последних записей по тегу")
 
