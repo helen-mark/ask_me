@@ -150,7 +150,7 @@ def prepare_tag_data(df, tags_of_interest):
     return pd.DataFrame(columns=['date', 'count', 'tag'])
 
 
-def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=100):
+def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=500):
     if search_in_summary:
         column = 'summary'
     else:
@@ -164,6 +164,8 @@ def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=
     filtered_df = filtered_df.sort_values('date', ascending=False).head(n_records)
 
     result_df = pd.DataFrame()
+    result_df['is_read'] = filtered_df['is_read']
+
     result_df['Дата и время'] = filtered_df['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
     if 'from' in filtered_df.columns:
@@ -178,9 +180,7 @@ def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=
 
     if 'text' in filtered_df.columns:
         result_df['Исходный текст'] = filtered_df['text'].fillna('')
-    elif 'body' in filtered_df.columns:
-        result_df['Исходный текст'] = filtered_df['body'].fillna('')
-
+    print(filtered_df.columns)
     return result_df
 
 st.title("Аналитика обращений клиентов")
@@ -243,11 +243,21 @@ def filter_by_hot_tags(df):
             st.markdown(s['name'])
 
             last_month_df = filter_by_timeframe(df, 'Последний месяц')
-            termination_records = get_recent_records_by_tag(last_month_df, s['tags'])
-
-            if not termination_records.empty:
+            display_df = get_recent_records_by_tag(last_month_df, s['tags'])
+            if not display_df.empty:
+                filter_option = st.radio(
+                    'Фильтр:',
+                    ['Все', 'Непрочитанные'],
+                    horizontal=True,
+                    key=f'filter_{s["name"]}'
+                )
+            
+                if filter_option == 'Непрочитанные':
+                    display_df = display_df[~display_df['is_read']]
+                display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
+            
                 st.dataframe(
-                    termination_records,
+                    display_df,
                     use_container_width=True,
                     hide_index=True
                 )
@@ -255,10 +265,10 @@ def filter_by_hot_tags(df):
                 col_terms1, col_terms2 = st.columns(2)
 
                 with col_terms1:
-                    st.metric("Всего сообщений", len(termination_records))
+                    st.metric("Всего сообщений", len(display_df))
 
                 with col_terms2:
-                    unique_files = termination_records[termination_records['Источник'] != '']['Источник'].nunique()
+                    unique_files = display_df[display_df['Источник'] != '']['Источник'].nunique()
                     st.metric("Уникальных отправителей", unique_files)
             else:
                 st.info("Нет обращений за последний месяц")
@@ -384,7 +394,7 @@ def ai_analyst(df):
                         if "stats" in message:
                             st.caption(f"📊 Проанализировано звонков: {message['stats']}")
 
-        st.markdown("### Ваш вопрос")
+        st.markdown("Ваш вопрос")
         user_input = st.chat_input("Напишите ваш вопрос здесь...", key="chat_input")
 
         if user_input:
@@ -478,7 +488,7 @@ with left_col:
     except FileNotFoundError:
         st.error("Файл не найден. Пожалуйста, убедитесь, что файл существует.")
     except Exception as e:
-        st.error(f"Ошибка при загрузке данных: {e}")
+        raise e
 
 with right_col:
     ai_analyst(df)
