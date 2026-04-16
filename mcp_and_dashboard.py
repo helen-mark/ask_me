@@ -188,176 +188,149 @@ st.markdown("---")
 
 left_col, right_col = st.columns([5, 2])
 
-# ==================== LEFT COLUMN - DASHBOARD ====================
-with left_col:
-    st.markdown("Дашборд аналитики")
+def filter_by_selected_tags(df):
+    all_tags = set()
+    for tags_list in df['tags']:
+        if isinstance(tags_list, list):
+            all_tags.update(tags_list)
 
-    TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail']
+    tag_options = ['Все теги'] + sorted(list(all_tags))
+    selected_view_tag = st.selectbox("Выберите тег для просмотра записей", tag_options, key="tag_select")
+    n_records = st.number_input("Количество записей", min_value=10, max_value=500, value=100, step=10,
+                                key="n_records")
 
-    try:
-        df = load_data(config['folders']['csv_mail'])
-        print('data loaded')
+    recent_records = get_recent_records_by_tag(df, selected_view_tag, n_records)
 
-        st.markdown("### Параметры фильтрации")
-        timeframe = st.selectbox(
-            "Выберите период",
-            ['Все время', 'Последний месяц', 'Последний квартал', 'Последний год'],
-            key="timeframe_select"
+    if not recent_records.empty:
+        st.dataframe(
+            recent_records,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Дата и время": st.column_config.DatetimeColumn("Дата и время", format="DD.MM.YYYY HH:mm:ss"),
+                "От кого": st.column_config.TextColumn("От кого"),
+                "Краткое содержание": st.column_config.TextColumn("Краткое содержание", width="large"),
+                "Теги": st.column_config.TextColumn("Теги"),
+                "Исходный текст": st.column_config.TextColumn("Исходный текст"),
+                "Имя файла": st.column_config.TextColumn("Имя файла")
+            }
         )
 
-        st.markdown("Выберите теги для отображения")
-        selected_tags = []
-        cols = st.columns(3)
-        for idx, tag in enumerate(TAGS_OF_INTEREST):
-            with cols[idx % 3]:
-                if st.checkbox(tag, value=(False if tag=='mail' else True), key=f"tag_{tag}"):
-                    selected_tags.append(tag)
+        col_stats_tag1, col_stats_tag2, col_stats_tag3 = st.columns(3)
 
-        filtered_df = filter_by_timeframe(df, timeframe)
+        with col_stats_tag1:
+            st.metric("Показано записей", len(recent_records))
 
-        if selected_tags:
-            tag_data = prepare_tag_data(filtered_df, selected_tags)
+        with col_stats_tag2:
+            if selected_view_tag != 'Все теги':
+                total_with_tag = len(df[df['tags'].apply(lambda x: selected_view_tag in x)])
+                st.metric("Всего с этим тегом", total_with_tag)
 
-            if not tag_data.empty:
-                fig = px.line(
-                    tag_data,
-                    x='date',
-                    y='count',
-                    color='tag',
-                    title=f'Динамика тегов за период: {timeframe}',
-                    labels={'date': 'Дата', 'count': 'Количество обращений', 'tag': 'Тег'}
+        with col_stats_tag3:
+            date_range = f"{recent_records['Дата и время'].min()} - {recent_records['Дата и время'].max()}"
+            st.metric("Диапазон дат", date_range)
+    else:
+        st.info(f"Нет записей с тегом '{selected_view_tag}'")
+
+
+def filter_by_hot_tags(df):
+    col_termination, col_prediction = st.columns([1, 1])
+    set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT']}
+    termination_tags = ['расторжение договора', 'приостановить услуги', 'клиент недоволен и угрожает отказом от услуг']
+    set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags}
+    for s in [set_termination, set_prediction]:
+        with s['col']:
+            st.markdown(s['name'])
+
+            last_month_df = filter_by_timeframe(df, 'Последний месяц')
+            termination_records = get_recent_records_by_tag(last_month_df, s['tags'])
+
+            if not termination_records.empty:
+                st.dataframe(
+                    termination_records,
+                    use_container_width=True,
+                    hide_index=True
                 )
 
-                fig.update_layout(
-                    xaxis_title="Дата",
-                    yaxis_title="Количество обращений",
-                    hovermode='x unified',
-                    legend_title_text='Теги'
-                )
+                col_terms1, col_terms2 = st.columns(2)
 
-                fig.update_traces(mode='lines+markers')
+                with col_terms1:
+                    st.metric("Всего сообщений", len(termination_records))
 
-                st.plotly_chart(fig, use_container_width=True)
-
-                total_stats = tag_data.groupby('tag')['count'].sum().reset_index()
-                total_stats.columns = ['Тег', 'Всего обращений']
-                total_stats = total_stats.sort_values('Всего обращений', ascending=False)
-
-                st.markdown("Статистика")
-                col_stats1, col_stats2, col_stats3 = st.columns(3)
-
-                with col_stats1:
-                    st.metric("Всего обращений", len(filtered_df))
-
-                with col_stats2:
-                    st.metric("Уникальных тегов", len(selected_tags))
-
-                with col_stats3:
-                    total_with_tags = len(filtered_df[filtered_df['tags'].apply(
-                        lambda x: any(tag in x for tag in selected_tags)
-                    )])
-                    st.metric("Обращений с выбранными тегами", total_with_tags)
-
-                st.dataframe(total_stats, use_container_width=True)
+                with col_terms2:
+                    unique_files = termination_records[termination_records['Источник'] != '']['Источник'].nunique()
+                    st.metric("Уникальных отправителей", unique_files)
             else:
-                st.warning("Нет данных для выбранных тегов в указанном периоде")
+                st.info("Нет обращений за последний месяц")
 
-        col_termination, col_prediction = st.columns([1,1])
-        set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT']}
-        termination_tags = ['расторжение договора', 'приостановить услуги', 'клиент недоволен и угрожает отказом от услуг']
-        set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags}
-        for s in [set_termination, set_prediction]:
-            with s['col']:
-                st.markdown(s['name'])
-        
-                last_month_df = filter_by_timeframe(df, 'Последний месяц')
-                termination_records = get_recent_records_by_tag(last_month_df, s['tags'])
-     
-                if not termination_records.empty:
-                    st.dataframe(
-                        termination_records,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-        
-                    col_terms1, col_terms2 = st.columns(2)
-        
-                    with col_terms1:
-                        st.metric("Всего сообщений", len(termination_records))
-        
-                    with col_terms2:
-                        unique_files = termination_records[termination_records['Источник'] != '']['Источник'].nunique()
-                        st.metric("Уникальных отправителей", unique_files)
-                else:
-                    st.info("Нет обращений за последний месяц")
-    
-        st.markdown("---")
-        st.markdown("Просмотр последних записей по тегу")
+def draw_graphs(df):
+    TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail']
 
-        all_tags = set()
-        for tags_list in df['tags']:
-            if isinstance(tags_list, list):
-                all_tags.update(tags_list)
+    st.markdown("### Параметры фильтрации")
+    timeframe = st.selectbox(
+        "Выберите период",
+        ['Все время', 'Последний месяц', 'Последний квартал', 'Последний год'],
+        key="timeframe_select"
+    )
 
-        tag_options = ['Все теги'] + sorted(list(all_tags))
-        selected_view_tag = st.selectbox("Выберите тег для просмотра записей", tag_options, key="tag_select")
-        n_records = st.number_input("Количество записей", min_value=10, max_value=500, value=100, step=10,
-                                    key="n_records")
+    st.markdown("Выберите теги для отображения")
+    selected_tags = []
+    cols = st.columns(3)
+    for idx, tag in enumerate(TAGS_OF_INTEREST):
+        with cols[idx % 3]:
+            if st.checkbox(tag, value=(False if tag=='mail' else True), key=f"tag_{tag}"):
+                selected_tags.append(tag)
 
-        recent_records = get_recent_records_by_tag(df, selected_view_tag, n_records)
+    filtered_df = filter_by_timeframe(df, timeframe)
 
-        if not recent_records.empty:
-            st.dataframe(
-                recent_records,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Дата и время": st.column_config.DatetimeColumn("Дата и время", format="DD.MM.YYYY HH:mm:ss"),
-                    "От кого": st.column_config.TextColumn("От кого"),
-                    "Краткое содержание": st.column_config.TextColumn("Краткое содержание", width="large"),
-                    "Теги": st.column_config.TextColumn("Теги"),
-                    "Исходный текст": st.column_config.TextColumn("Исходный текст"),
-                    "Имя файла": st.column_config.TextColumn("Имя файла")
-                }
+    if selected_tags:
+        tag_data = prepare_tag_data(filtered_df, selected_tags)
+
+        if not tag_data.empty:
+            fig = px.line(
+                tag_data,
+                x='date',
+                y='count',
+                color='tag',
+                title=f'Динамика тегов за период: {timeframe}',
+                labels={'date': 'Дата', 'count': 'Количество обращений', 'tag': 'Тег'}
             )
 
-            col_stats_tag1, col_stats_tag2, col_stats_tag3 = st.columns(3)
+            fig.update_layout(
+                xaxis_title="Дата",
+                yaxis_title="Количество обращений",
+                hovermode='x unified',
+                legend_title_text='Теги'
+            )
 
-            with col_stats_tag1:
-                st.metric("Показано записей", len(recent_records))
+            fig.update_traces(mode='lines+markers')
 
-            with col_stats_tag2:
-                if selected_view_tag != 'Все теги':
-                    total_with_tag = len(df[df['tags'].apply(lambda x: selected_view_tag in x)])
-                    st.metric("Всего с этим тегом", total_with_tag)
+            st.plotly_chart(fig, use_container_width=True)
 
-            with col_stats_tag3:
-                date_range = f"{recent_records['Дата и время'].min()} - {recent_records['Дата и время'].max()}"
-                st.metric("Диапазон дат", date_range)
+            total_stats = tag_data.groupby('tag')['count'].sum().reset_index()
+            total_stats.columns = ['Тег', 'Всего обращений']
+            total_stats = total_stats.sort_values('Всего обращений', ascending=False)
+
+            st.markdown("Статистика")
+            col_stats1, col_stats2, col_stats3 = st.columns(3)
+
+            with col_stats1:
+                st.metric("Всего обращений", len(filtered_df))
+
+            with col_stats2:
+                st.metric("Уникальных тегов", len(selected_tags))
+
+            with col_stats3:
+                total_with_tags = len(filtered_df[filtered_df['tags'].apply(
+                    lambda x: any(tag in x for tag in selected_tags)
+                )])
+                st.metric("Обращений с выбранными тегами", total_with_tags)
+
+            st.dataframe(total_stats, use_container_width=True)
         else:
-            st.info(f"Нет записей с тегом '{selected_view_tag}'")
+            st.warning("Нет данных для выбранных тегов в указанном периоде")
 
-        with st.expander("Просмотр исходных данных"):
-            st.dataframe(df.head(100), use_container_width=True)
-
-            st.markdown("### Статистика по всем тегам")
-            all_tags_stats = []
-            for tags_list in df['tags']:
-                if isinstance(tags_list, list):
-                    all_tags_stats.extend(tags_list)
-
-            if all_tags_stats:
-                tags_series = pd.Series(all_tags_stats)
-                tags_stats = tags_series.value_counts().reset_index()
-                tags_stats.columns = ['Тег', 'Количество']
-                st.dataframe(tags_stats, use_container_width=True)
-
-    except FileNotFoundError:
-        st.error("Файл не найден. Пожалуйста, убедитесь, что файл существует.")
-    except Exception as e:
-        st.error(f"Ошибка при загрузке данных: {e}")
-
-with right_col:
+def ai_analyst(df):
     st.markdown("🤖  AI Аналитик")
     st.markdown("Задайте вопрос о данных в свободной форме")
 
@@ -473,4 +446,40 @@ with right_col:
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(st.session_state.query_history, f, ensure_ascii=False, indent=2, default=str)
                 st.success(f"✅ Сохранено: {filename}")
+
+# ==================== LEFT COLUMN - DASHBOARD ====================
+with left_col:
+    st.markdown("Дашборд аналитики")
+    df = load_data(config['folders']['csv_mail'])
+    print('Data loaded')
+    try:
+        filter_by_hot_tags(df)
+
+        st.markdown("---")
+        st.markdown("Просмотр последних записей по тегу")
+        filter_by_selected_tags(df)
+        draw_graphs(df)
+
+        with st.expander("Просмотр исходных данных"):
+            st.dataframe(df.head(100), use_container_width=True)
+
+            st.markdown("### Статистика по всем тегам")
+            all_tags_stats = []
+            for tags_list in df['tags']:
+                if isinstance(tags_list, list):
+                    all_tags_stats.extend(tags_list)
+
+            if all_tags_stats:
+                tags_series = pd.Series(all_tags_stats)
+                tags_stats = tags_series.value_counts().reset_index()
+                tags_stats.columns = ['Тег', 'Количество']
+                st.dataframe(tags_stats, use_container_width=True)
+
+    except FileNotFoundError:
+        st.error("Файл не найден. Пожалуйста, убедитесь, что файл существует.")
+    except Exception as e:
+        st.error(f"Ошибка при загрузке данных: {e}")
+
+with right_col:
+    ai_analyst(df)
 
