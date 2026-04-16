@@ -9,6 +9,9 @@ import os
 import hmac
 import mcp_orchestrator
 
+CONFIG_PATH='config.yml'
+CREDENTIALS_PATH='credentials.yml'
+
 def check_password():
     def password_entered():
         if hmac.compare_digest(
@@ -59,7 +62,7 @@ st.set_page_config(
 #    st.rerun()
 
 try:
-    with open('config.yml', 'r', encoding='utf-8') as file:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
         config = yaml.safe_load(file)
 except:
     config = {
@@ -79,10 +82,10 @@ def init_system():
         with st.spinner("Загрузка системы аналитики..."):
             try:
                 st.session_state.system = mcp_orchestrator.CallAnalyticsMCP(
+                    CONFIG_PATH,
+                    CREDENTIALS_PATH,
                     config['folders']['csv_mail'],
-                    config.get("llm_model", "gpt-3.5-turbo"),
-                    None,
-                    None
+                    config.get("llm_model", "gpt-3.5-turbo")
                 )
                 st.session_state.initialized = True
                 st.success("Система аналитики готова к работе!")
