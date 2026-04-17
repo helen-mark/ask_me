@@ -43,41 +43,8 @@ def check_password():
     else:
         return True
 
-if not check_password():
-    st.stop()
 
-st.set_page_config(
-    page_title="Аналитик почты",
-    page_icon="",
-    layout="wide"
-)
-
-st.set_page_config(
-    page_title="Аналитика обращений клиентов",
-    layout="wide"
-)
-
-#if st.button("Обновить данные"):
-#    st.cache_data.clear()
-#    st.rerun()
-
-try:
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
-        config = yaml.safe_load(file)
-except:
-    config = {
-        'folders': {'csv_mail': '.', 'saved_results': './results'},
-        'llm_model': 'gpt-3.5-turbo'
-    }
-
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = False
-    st.session_state.messages = []
-    st.session_state.query_history = []
-    st.session_state.system = None
-
-
-def init_system():
+def init_system(config):
     if not st.session_state.initialized:
         with st.spinner("Загрузка системы аналитики..."):
             try:
@@ -97,7 +64,6 @@ def load_data(data_path):
     for f in os.listdir(data_path):
         file_path = os.path.join(data_path, f)
         break
-    print(file_path)
     df = pd.read_csv(file_path, encoding='utf-8')
     df = df.sort_values('date', ascending=False).reset_index(drop=True)
     df['date'] = pd.to_datetime(df['date_str'])
@@ -183,10 +149,6 @@ def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=
     print(filtered_df.columns)
     return result_df
 
-st.title("Аналитика обращений клиентов")
-st.markdown("---")
-
-left_col, right_col = st.columns([5, 2])
 
 def filter_by_selected_tags(df):
     all_tags = set()
@@ -340,13 +302,13 @@ def draw_graphs(df):
         else:
             st.warning("Нет данных для выбранных тегов в указанном периоде")
 
-def ai_analyst(df):
+def ai_analyst(config):
     st.markdown("🤖  AI Аналитик")
     st.markdown("Задайте вопрос о данных в свободной форме")
 
     if not st.session_state.initialized:
         if st.button("Запустить AI аналитика", use_container_width=True):
-            init_system()
+            init_system(config)
             st.rerun()
         st.info("Нажмите кнопку выше, чтобы активировать AI аналитика")
     else:
@@ -457,39 +419,81 @@ def ai_analyst(df):
                     json.dump(st.session_state.query_history, f, ensure_ascii=False, indent=2, default=str)
                 st.success(f"✅ Сохранено: {filename}")
 
-# ==================== LEFT COLUMN - DASHBOARD ====================
-with left_col:
-    st.markdown("Дашборд аналитики")
-    df = load_data(config['folders']['csv_mail'])
-    print('Data loaded')
+
+def main():
+    if not check_password():
+        st.stop()
+
+    st.set_page_config(
+        page_title="Аналитик почты",
+        page_icon="",
+        layout="wide"
+    )
+
+    st.set_page_config(
+        page_title="Аналитика обращений клиентов",
+        layout="wide"
+    )
+
+    # if st.button("Обновить данные"):
+    #    st.cache_data.clear()
+    #    st.rerun()
+
     try:
-        filter_by_hot_tags(df)
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
+            config = yaml.safe_load(file)
+    except:
+        config = {
+            'folders': {'csv_mail': '.', 'saved_results': './results'},
+            'llm_model': 'gpt-3.5-turbo'
+        }
 
-        st.markdown("---")
-        st.markdown("Просмотр последних записей по тегу")
-        filter_by_selected_tags(df)
-        draw_graphs(df)
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = False
+        st.session_state.messages = []
+        st.session_state.query_history = []
+        st.session_state.system = None
 
-        with st.expander("Просмотр исходных данных"):
-            st.dataframe(df.head(100), use_container_width=True)
+    st.title("Аналитика обращений клиентов")
+    st.markdown("---")
 
-            st.markdown("### Статистика по всем тегам")
-            all_tags_stats = []
-            for tags_list in df['tags']:
-                if isinstance(tags_list, list):
-                    all_tags_stats.extend(tags_list)
+    left_col, right_col = st.columns([5, 2])
 
-            if all_tags_stats:
-                tags_series = pd.Series(all_tags_stats)
-                tags_stats = tags_series.value_counts().reset_index()
-                tags_stats.columns = ['Тег', 'Количество']
-                st.dataframe(tags_stats, use_container_width=True)
+    with left_col:
+        st.markdown("Дашборд аналитики")
+        df = load_data(config['folders']['csv_mail'])
+        print('Data loaded')
+        try:
+            filter_by_hot_tags(df)
 
-    except FileNotFoundError:
-        st.error("Файл не найден. Пожалуйста, убедитесь, что файл существует.")
-    except Exception as e:
-        raise e
+            st.markdown("---")
+            st.markdown("Просмотр последних записей по тегу")
+            filter_by_selected_tags(df)
+            draw_graphs(df)
 
-with right_col:
-    ai_analyst(df)
+            with st.expander("Просмотр исходных данных"):
+                st.dataframe(df.head(100), use_container_width=True)
+
+                st.markdown("### Статистика по всем тегам")
+                all_tags_stats = []
+                for tags_list in df['tags']:
+                    if isinstance(tags_list, list):
+                        all_tags_stats.extend(tags_list)
+
+                if all_tags_stats:
+                    tags_series = pd.Series(all_tags_stats)
+                    tags_stats = tags_series.value_counts().reset_index()
+                    tags_stats.columns = ['Тег', 'Количество']
+                    st.dataframe(tags_stats, use_container_width=True)
+
+        except FileNotFoundError:
+            st.error("Файл не найден. Пожалуйста, убедитесь, что файл существует.")
+        except Exception as e:
+            raise e
+
+    with right_col:
+        ai_analyst(config)
+
+if __name__=='__main__':
+    main()
 
