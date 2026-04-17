@@ -194,46 +194,81 @@ def filter_by_selected_tags(df):
     else:
         st.info(f"Нет записей с тегом '{selected_view_tag}'")
 
+def make_table(setup, df):
+    st.markdown(setup['name'])
+
+    last_month_df = filter_by_timeframe(df, 'Последний месяц')
+    display_df = get_recent_records_by_tag(last_month_df, setup['tags'], setup['search_in_summary'])
+    if not display_df.empty:
+        filter_option = st.radio(
+            'Фильтр:',
+            ['Все', 'Непрочитанные'],
+            horizontal=True,
+            key=f'filter_{setup["name"]}'
+        )
+
+        if filter_option == 'Непрочитанные':
+            display_df = display_df[~display_df['is_read']]
+        display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        col_terms1, col_terms2 = st.columns(2)
+
+        with col_terms1:
+            st.metric("Всего сообщений", len(display_df))
+
+        with col_terms2:
+            unique_files = display_df[display_df['Источник'] != '']['Источник'].nunique()
+            st.metric("Уникальных отправителей", unique_files)
+    else:
+        st.info("Нет обращений за последний месяц")
 
 def filter_by_hot_tags(df):
     col_termination, col_prediction = st.columns([1, 1])
-    set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT']}
+
     termination_tags = ['расторжение договора', 'приостановить услуги', 'клиент недоволен и угрожает отказом от услуг']
-    set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags}
+
+    set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags, 'search_in_summary': False}
+    set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT'], 'search_in_summary': True}
+
     for s in [set_termination, set_prediction]:
         with s['col']:
-            st.markdown(s['name'])
+            make_table(s, df)
 
-            last_month_df = filter_by_timeframe(df, 'Последний месяц')
-            display_df = get_recent_records_by_tag(last_month_df, s['tags'])
-            if not display_df.empty:
-                filter_option = st.radio(
-                    'Фильтр:',
-                    ['Все', 'Непрочитанные'],
-                    horizontal=True,
-                    key=f'filter_{s["name"]}'
-                )
-            
-                if filter_option == 'Непрочитанные':
-                    display_df = display_df[~display_df['is_read']]
-                display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
-            
-                st.dataframe(
-                    display_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
+    col_removal, col_complaint = st.columns([1, 1])
 
-                col_terms1, col_terms2 = st.columns(2)
+    removal_tags = ['прошу вывезти', 'просим вывезти', 'убрать все', 'убрать ков', 'вывезти ков', 'вывоз ков', 'забрать ков', 'забрать все', 'вывоз всех', 'вывезти все']
+    complaint_tags =     [
+        "низкое качество стирки или чистки",
+        "не заменили ковры вовремя",
+        "долго нет ответа на заявку",
+        "произошла лишняя доставка",
+        "доставили не те ковры",
+        "неверная сумма в счете",
+        "ковер забрали без причины",
+        "забрали не тот ковер",
+        "доставили ковры на неверный адрес",
+        "менеджер нагрубил клиенту",
+        "клиент недоволен ценами",
+        "ошибка в документах",
+        "клиент заявляет что ранее подобная проблема уже возникала и это повторный случай",
+        "неприемлемое поведение или грубость водителя",
+        "плохое качество ковра, неудобный или старый ковер",
+        "клиент недоволен и угрожает отказом от услуг",
+        "клиент возмущен"]
 
-                with col_terms1:
-                    st.metric("Всего сообщений", len(display_df))
+    set_removal = {'col': col_removal, 'name': 'Вывозы', 'tags': removal_tags, 'search_in_summary': False}
+    set_complaint = {'col': col_complaint, 'name': 'Жалобы', 'tags': complaint_tags, 'search_in_summary': False}
 
-                with col_terms2:
-                    unique_files = display_df[display_df['Источник'] != '']['Источник'].nunique()
-                    st.metric("Уникальных отправителей", unique_files)
-            else:
-                st.info("Нет обращений за последний месяц")
+    for s in [set_removal, set_complaint]:
+        with s['col']:
+            make_table(s, df)
+
 
 def draw_graphs(df):
     TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail']
@@ -468,7 +503,9 @@ def main():
 
             st.markdown("---")
             st.markdown("Просмотр последних записей по тегу")
+
             filter_by_selected_tags(df)
+
             draw_graphs(df)
 
             with st.expander("Просмотр исходных данных"):
