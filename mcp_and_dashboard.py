@@ -66,13 +66,15 @@ def load_data(data_path):
         break
     df = pd.read_csv(file_path, encoding='utf-8')
     df = df.sort_values('date', ascending=False).reset_index(drop=True)
+    df['date'] = df['date'].str.lstrip("'")
+    df['date_str'] = df['date_str'].str.lstrip("'")
     df['date'] = pd.to_datetime(df['date_str'])
     if df['date'].dt.tz is not None:
         df['date'] = df['date'].dt.tz_localize(None)
     st.sidebar.write(f"Диапазон дат: {df['date'].min()} - {df['date'].max()}")
 
     if 'summary' in df.columns:
-        df['summary'] = df['summary'].fillna('нет')
+        df['summary'] = df['summary'].fillna('нет').str.lower()
 
     if 'tags' in df.columns:
         df['tags'] = df['tags'].fillna('[]')
@@ -116,13 +118,16 @@ def prepare_tag_data(df, tags_of_interest):
     return pd.DataFrame(columns=['date', 'count', 'tag'])
 
 
-def get_recent_records_by_tag(df, tag_names, search_in_summary=False, n_records=500):
+def get_recent_records_by_tag(df, tag_names, search_in_summary=False, search_in_tags=True, n_records=500):
+    columns = []
     if search_in_summary:
-        column = 'summary'
-    else:
-        column = 'tags'
+        columns.append('summary')
+    if search_in_tags:
+        columns.append('tags')
         
-    filtered_df = df[df[column].apply(lambda x: any(tag_name in x for tag_name in tag_names))].copy()
+    filtered_df = df[df[columns].applymap(
+        lambda cell: any(tag_name.lower() in str(cell).lower() for tag_name in tag_names)
+    ).any(axis=1)].copy()
 
     if filtered_df.empty:
         return pd.DataFrame()
@@ -195,10 +200,10 @@ def filter_by_selected_tags(df):
         st.info(f"Нет записей с тегом '{selected_view_tag}'")
 
 def make_table(setup, df):
-    st.markdown(setup['name'])
+    st.markdown(f"### **:blue[{setup['name']}]**")
 
     last_month_df = filter_by_timeframe(df, 'Последний месяц')
-    display_df = get_recent_records_by_tag(last_month_df, setup['tags'], setup['search_in_summary'])
+    display_df = get_recent_records_by_tag(last_month_df, setup['tags'], setup['search_in_summary'], setup['search_in_tags'])
     if not display_df.empty:
         filter_option = st.radio(
             'Фильтр:',
@@ -209,7 +214,14 @@ def make_table(setup, df):
 
         if filter_option == 'Непрочитанные':
             display_df = display_df[~display_df['is_read']]
-        display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
+
+        if not display_df.empty:
+            display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
+    
+            display_df['Источник'] = display_df.apply(
+                lambda row: f"🚩{row['Источник']}" if 'ai rct' in row['Теги'] else row['Источник'],
+                axis=1
+            )
 
         st.dataframe(
             display_df,
@@ -233,16 +245,16 @@ def filter_by_hot_tags(df):
 
     termination_tags = ['расторжение договора', 'приостановить услуги', 'клиент недоволен и угрожает отказом от услуг']
 
-    set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags, 'search_in_summary': False}
-    set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT'], 'search_in_summary': True}
+    set_termination = {'col': col_termination, 'name': 'Расторжения и приостановки', 'tags': termination_tags, 'search_in_summary': False, 'search_in_tags': True}
+    set_prediction = {'col': col_prediction, 'name': 'AI RCT', 'tags': ['AI RCT'], 'search_in_summary': False, 'search_in_tags': True}
 
     for s in [set_termination, set_prediction]:
         with s['col']:
             make_table(s, df)
 
-    col_removal, col_complaint = st.columns([1, 1])
+    col_new_client, col_complaint = st.columns([1, 1])
 
-    removal_tags = ['прошу вывезти', 'просим вывезти', 'убрать все', 'убрать ков', 'вывезти ков', 'вывоз ков', 'забрать ков', 'забрать все', 'вывоз всех', 'вывезти все']
+    new_tags = ["новый офис", "новая точка", "новый объект", "новый адрес", "коммерческое предложение", "новый филиал", "клиент хочет добавить ковры", "новый клиент заключение договора"] #['прошу вывезти', 'просим вывезти', 'убрать все ков', 'убрать ков', 'вывезти ков', 'вывоз ков', 'забрать ков', 'забрать все', 'вывоз всех', 'вывезти все']
     complaint_tags =     [
         "низкое качество стирки или чистки",
         "не заменили ковры вовремя",
@@ -262,10 +274,10 @@ def filter_by_hot_tags(df):
         "клиент недоволен и угрожает отказом от услуг",
         "клиент возмущен"]
 
-    set_removal = {'col': col_removal, 'name': 'Вывозы', 'tags': removal_tags, 'search_in_summary': False}
-    set_complaint = {'col': col_complaint, 'name': 'Жалобы', 'tags': complaint_tags, 'search_in_summary': False}
+    set_new_client = {'col': col_new_client, 'name': 'Комм. предложение', 'tags': new_tags, 'search_in_summary': True, 'search_in_tags': True}
+    set_complaint = {'col': col_complaint, 'name': 'Жалобы', 'tags': complaint_tags, 'search_in_summary': False, 'search_in_tags': True}
 
-    for s in [set_removal, set_complaint]:
+    for s in [set_new_client, set_complaint]:
         with s['col']:
             make_table(s, df)
 
@@ -474,14 +486,8 @@ def main():
     #    st.cache_data.clear()
     #    st.rerun()
 
-    try:
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
             config = yaml.safe_load(file)
-    except:
-        config = {
-            'folders': {'csv_mail': '.', 'saved_results': './results'},
-            'llm_model': 'gpt-3.5-turbo'
-        }
 
     if 'initialized' not in st.session_state:
         st.session_state.initialized = False
@@ -502,8 +508,7 @@ def main():
             filter_by_hot_tags(df)
 
             st.markdown("---")
-            st.markdown("Просмотр последних записей по тегу")
-
+            st.markdown(f"### **:blue[Выбрать сообщения по тегу]**")
             filter_by_selected_tags(df)
 
             draw_graphs(df)
