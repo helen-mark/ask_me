@@ -47,17 +47,17 @@ def check_password():
 def init_system(config):
     if not st.session_state.initialized:
         with st.spinner("Загрузка системы аналитики..."):
-            try:
+            #try:
                 st.session_state.system = mcp_orchestrator.CallAnalyticsMCP(
                     CONFIG_PATH,
                     CREDENTIALS_PATH,
                     config['folders']['csv_mail'],
-                    config.get("llm_model", "gpt-3.5-turbo")
+                    config.get("llm_model")
                 )
                 st.session_state.initialized = True
                 st.success("Система аналитики готова к работе!")
-            except Exception as e:
-                st.error(f"Ошибка инициализации: {e}")
+            #except Exception as e:
+            #    st.error(f"Ошибка инициализации: {e}")
 
 
 def load_data(data_path):
@@ -65,13 +65,13 @@ def load_data(data_path):
         file_path = os.path.join(data_path, f)
         break
     df = pd.read_csv(file_path, encoding='utf-8')
-    df = df.sort_values('date', ascending=False).reset_index(drop=True)
-    df['date'] = df['date'].str.lstrip("'")
+    #df['date'] = df['date'].str.lstrip("'")
     df['date_str'] = df['date_str'].str.lstrip("'")
     df['date'] = pd.to_datetime(df['date_str'])
     if df['date'].dt.tz is not None:
         df['date'] = df['date'].dt.tz_localize(None)
     st.sidebar.write(f"Диапазон дат: {df['date'].min()} - {df['date'].max()}")
+    df = df.sort_values('date', ascending=False).reset_index(drop=True)
 
     if 'summary' in df.columns:
         df['summary'] = df['summary'].fillna('нет').str.lower()
@@ -81,6 +81,9 @@ def load_data(data_path):
         df['tags'] = df['tags'].apply(lambda x: eval(x) if isinstance(x, str) else x)
     else:
         df['tags'] = [[] for _ in range(len(df))]
+
+    if 'is_read' not in df.columns:
+        df['is_read'] = True
 
     return df
 
@@ -119,16 +122,19 @@ def prepare_tag_data(df, tags_of_interest):
 
 
 def get_recent_records_by_tag(df, tag_names, search_in_summary=False, search_in_tags=True, n_records=500):
+    print(tag_names)
     columns = []
     if search_in_summary:
         columns.append('summary')
     if search_in_tags:
         columns.append('tags')
         
+    print(len(df))
     filtered_df = df[df[columns].applymap(
         lambda cell: any(tag_name.lower() in str(cell).lower() for tag_name in tag_names)
     ).any(axis=1)].copy()
 
+    print(len(filtered_df))
     if filtered_df.empty:
         return pd.DataFrame()
 
@@ -165,8 +171,8 @@ def filter_by_selected_tags(df):
     selected_view_tag = st.selectbox("Выберите тег для просмотра записей", tag_options, key="tag_select")
     n_records = st.number_input("Количество записей", min_value=10, max_value=500, value=100, step=10,
                                 key="n_records")
-
-    recent_records = get_recent_records_by_tag(df, selected_view_tag, n_records)
+    print(f"Selected tag: {selected_view_tag}")
+    recent_records = get_recent_records_by_tag(df, [selected_view_tag], n_records)
 
     if not recent_records.empty:
         st.dataframe(
@@ -215,9 +221,21 @@ def make_table(setup, df):
         if filter_option == 'Непрочитанные':
             display_df = display_df[~display_df['is_read']]
 
-        if not display_df.empty:
+        source_filter = st.radio(
+            'Источник:',
+            ['Все источники', 'Почта', 'Звонки'],
+            horizontal=True,
+            key=f'source_{setup["name"]}'
+        )
+
+        if source_filter == 'Звонки':
+            display_df = display_df[display_df['Теги'].str.contains('call', case=False, na=False)]
+            display_df = display_df[['Дата и время', 'Краткое содержание', 'Теги', 'Исходный текст']]
+        elif source_filter == 'Почта':
+            display_df = display_df[display_df['Теги'].str.contains('mail', case=False, na=False)]
+        
+        if not display_df.empty and not source_filter == 'Звонки':
             display_df['is_read'] = display_df['is_read'].apply(lambda x: '🔴 Новое' if not x else '✅ Прочитано')
-    
             display_df['Источник'] = display_df.apply(
                 lambda row: f"🚩{row['Источник']}" if 'ai rct' in row['Теги'] else row['Источник'],
                 axis=1
@@ -235,8 +253,9 @@ def make_table(setup, df):
             st.metric("Всего сообщений", len(display_df))
 
         with col_terms2:
-            unique_files = display_df[display_df['Источник'] != '']['Источник'].nunique()
-            st.metric("Уникальных отправителей", unique_files)
+            if source_filter != 'Звонки':
+                unique_files = display_df[display_df['Источник'] != '']['Источник'].nunique()
+                st.metric("Уникальных отправителей", unique_files)
     else:
         st.info("Нет обращений за последний месяц")
 
@@ -282,8 +301,14 @@ def filter_by_hot_tags(df):
             make_table(s, df)
 
 
+    manager_complaint_tags = ["жалоба на менеджера", "менеджер нагрубил клиенту"]
+    set_manager_complaint = {'col': col_new_client, 'name': 'Жалобы на менеджеров', 'tags': manager_complaint_tags, 'search_in_summary': False, 'search_in_tags': True}
+    with set_manager_complaint['col']:
+        make_table(set_manager_complaint, df)
+
+
 def draw_graphs(df):
-    TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail']
+    TAGS_OF_INTEREST = ['клиент уходит к конкурентам', 'клиент недоволен и угрожает отказом от услуг', 'расторжение договора', 'клиент возмущен', 'mail', 'calls']
 
     st.markdown("### Параметры фильтрации")
     timeframe = st.selectbox(
@@ -297,7 +322,7 @@ def draw_graphs(df):
     cols = st.columns(3)
     for idx, tag in enumerate(TAGS_OF_INTEREST):
         with cols[idx % 3]:
-            if st.checkbox(tag, value=(False if tag=='mail' else True), key=f"tag_{tag}"):
+            if st.checkbox(tag, value=(False if tag in ['mail', 'calls'] else True), key=f"tag_{tag}"):
                 selected_tags.append(tag)
 
     filtered_df = filter_by_timeframe(df, timeframe)
@@ -502,7 +527,9 @@ def main():
 
     with left_col:
         st.markdown("Дашборд аналитики")
-        df = load_data(config['folders']['csv_mail'])
+        df_mail = load_data(config['folders']['csv_mail'])
+        df_calls = load_data(config['folders']['csv_calls'])
+        df = pd.concat([df_calls, df_mail], ignore_index=True)
         print('Data loaded')
         try:
             filter_by_hot_tags(df)

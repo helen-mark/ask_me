@@ -91,27 +91,30 @@ class DriveDataLoader:
 
         print(f" Читаю данные из CSV файла: {csv_file}")
 
-        try:
-            df = pd.read_csv(
+        print(1) 
+        df = pd.read_csv(
                 filepath,
                 encoding='utf-8-sig',
-                parse_dates=['date'],
+                #parse_dates=['date_str'],
                 converters={
                     'tags': lambda x: ast.literal_eval(x) if isinstance(x, str) and x.strip() else []
                 }
-            )
+        )
+        print(2)
+        #df['date'] = pd.to_datetime(df['date_str'])# Alternative if formats might vary
+        df['date'] = pd.to_datetime(df['date_str'], format='mixed')
+        print(3)
+        required_columns = ['date', 'text', 'tags', 'summary']
+        missing_columns = [col for col in required_columns if col not in df.columns]
 
-            required_columns = ['date', 'text', 'tags', 'summary']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-
-            if missing_columns:
+        if missing_columns:
                 print(f"В CSV файле отсутствуют колонки: {missing_columns}")
                 print(f"Доступные колонки: {list(df.columns)}")
                 return []
+        print(4)
+        print(f"Загружено {len(df)} строк из CSV")
 
-            print(f"Загружено {len(df)} строк из CSV")
-
-            for idx, row in df.iterrows():
+        for idx, row in df.iterrows():
                 call_date = pd.to_datetime(row['date'])
 
                 tags = row['tags']
@@ -139,12 +142,12 @@ class DriveDataLoader:
 
                 if limit and idx + 1 >= limit:
                     break
+        print(5)
+        self.calls_cache = all_calls
 
-            self.calls_cache = all_calls
+        print(f" Преобразовано {len(all_calls)} записей звонков")
 
-            print(f" Преобразовано {len(all_calls)} записей звонков")
-
-            if all_calls:
+        if all_calls:
                 dates = [c['call_date'] for c in all_calls if c['call_date']]
                 if dates:
                     min_date = min(dates)
@@ -157,11 +160,7 @@ class DriveDataLoader:
                 unique_tags = set(all_tags)
                 print(f"Уникальных тегов: {len(unique_tags)}")
 
-            return all_calls
-
-        except Exception as e:
-            print(f"Ошибка чтения CSV файла {csv_file}: {e}")
-            return []
+        return all_calls
 
     def _extract_date_from_filename(self, filename: str) -> datetime:
         patterns = [
@@ -794,7 +793,7 @@ class QueryExecutor:
     ]
     }}
 
-    В поле "examples" включи ДО 3 примеров релевантных текстов звонков (если они есть). Если релевантных нет, верни пустой список.
+    В поле "examples" включи ДО 10 примеров релевантных текстов звонков (если они есть). Если релевантных нет, верни пустой список.
 
     СПИСОК ЗВОНКОВ ДЛЯ АНАЛИЗА:
     {calls_formatted}
